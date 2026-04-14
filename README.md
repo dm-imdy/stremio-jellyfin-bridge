@@ -23,7 +23,7 @@ A lightweight, robust Node.js addon that seamlessly integrates your local Jellyf
 
 First, clone the repository to your host machine
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/dm-imdy/stremio-jellyfin-bridge
 cd stremio-jellyfin-bridge
 npm install
 ```
