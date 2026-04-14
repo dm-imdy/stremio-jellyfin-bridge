@@ -1,0 +1,10 @@
+# Dependencies
+node_modules
+npm-debug.log
+
+# Git version control
+.git
+.gitignore
+
+# Secrets and local configurations
+.env

@@ -1,0 +1,22 @@
+diff --git a/node_modules/stremio-addon-sdk/src/serveHTTP.js b/node_modules/stremio-addon-sdk/src/serveHTTP.js
+index db94ae3..cba0015 100644
+--- a/node_modules/stremio-addon-sdk/src/serveHTTP.js
++++ b/node_modules/stremio-addon-sdk/src/serveHTTP.js
+@@ -53,7 +53,7 @@ function serveHTTP(addonInterface, opts = {}) {
+ 	return new Promise(function(resolve, reject) {
+ 		server.on('listening', function() {
+ 			const url = `http://127.0.0.1:${server.address().port}/manifest.json`
+-			console.log('HTTP addon accessible at:', url)
++			console.log('HTTP addon is accessible at:', url)
+ 			if (process.argv.includes('--launch')) {
+ 				const base = 'https://staging.strem.io#'
+ 				//const base = 'https://app.strem.io/shell-v4.4#'
+@@ -63,7 +63,7 @@ function serveHTTP(addonInterface, opts = {}) {
+ 			if (process.argv.includes('--install')) {
+ 				opn(url.replace('http://', 'stremio://'))
+ 			}
+-			resolve({ url, server })
++			resolve({ url, server, app })
+ 		})
+ 		server.on('error', reject)
+ 	})

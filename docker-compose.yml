@@ -1,0 +1,11 @@
+services:
+  stremio-jellyfin-bridge:
+    build: .
+    container_name: stremio-jellyfin-bridge
+    # CRITICAL: Bypasses the virtual bridge so the script finds the real LAN IP
+    network_mode: "host"
+    # Automatically pulls the variables into the container
+    env_file:
+      - .env
+    # Tells Ubuntu to automatically restart the bridge if the server reboots
+    restart: unless-stopped
