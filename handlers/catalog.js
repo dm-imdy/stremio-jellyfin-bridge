@@ -68,7 +68,7 @@ export const catalogHandler = async ({ type, id, extra }) => {
         return { metas };
 
     } catch (error) {
-        console.log("❌ Error fetching catalog:", error.message);
+        console.error("Error fetching catalog:", error.message);
         return { metas: [] };
     }
 };

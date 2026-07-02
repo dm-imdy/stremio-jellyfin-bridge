@@ -22,7 +22,7 @@ export const streamHandler = async ({ type, id }) => {
             const season = parts[1];
             const episode = parts[2];
 
-            // Search Jellyfin using searchTerm (safer fallback than AnyProviderIdEquals)
+            // Search Jellyfin for the root item
             const searchRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items`, {
                 headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
                 params: { 
@@ -33,8 +33,7 @@ export const streamHandler = async ({ type, id }) => {
                 }
             });
 
-            // STRICT VALIDATION: Do not trust Jellyfin blindly. 
-            // Force verify that the IMDb ID actually matches.
+            // STRICT VALIDATION (Step 1: Root Level Match)
             const matchedItem = searchRes.data.Items?.find(item => 
                 item.ProviderIds && item.ProviderIds.Imdb === imdbId
             );
@@ -52,13 +51,24 @@ export const streamHandler = async ({ type, id }) => {
                             ParentIndexNumber: season,
                             IndexNumber: episode,
                             IncludeItemTypes: 'Episode',
-                            Recursive: true
+                            Recursive: true,
+                            Fields: 'ParentIndexNumber,IndexNumber'
                         }
                     });
 
-                    if (epRes.data.Items && epRes.data.Items.length > 0) {
-                        jellyfinItemId = epRes.data.Items[0].Id;
-                        console.log(`[Stream] Found local Episode match: S${season}E${episode}`);
+                    // STRICT VALIDATION (Step 2: Episode Level Index Match)
+                    const targetSeason = parseInt(season, 10);
+                    const targetEpisode = parseInt(episode, 10);
+
+                    const matchedEpisode = epRes.data.Items?.find(ep => 
+                        ep.ParentIndexNumber === targetSeason && ep.IndexNumber === targetEpisode
+                    );
+
+                    if (matchedEpisode) {
+                        jellyfinItemId = matchedEpisode.Id;
+                        console.log(`[Stream] Found local Episode match: S${targetSeason}E${targetEpisode}`);
+                    } else {
+                        console.log(`[Stream] ⚠️ Strict check failed: No exact match for S${targetSeason}E${targetEpisode}`);
                     }
                 }
             } else {
@@ -84,7 +94,7 @@ export const streamHandler = async ({ type, id }) => {
         if (item.MediaSources && item.MediaSources.length > 0) {
             mediaSourceId = item.MediaSources[0].Id;
         } else {
-            console.log(`❌ No MediaSources found for Jellyfin Item: ${jellyfinItemId}`);
+            console.error(`No MediaSources found for Jellyfin Item: ${jellyfinItemId}`);
             return { streams: [] };
         }
 
@@ -110,7 +120,7 @@ export const streamHandler = async ({ type, id }) => {
         };
 
     } catch (error) {
-        console.log("❌ Error resolving stream:", error.message);
+        console.error("Error resolving stream:", error.message);
         return { streams: [] };
     }
 };

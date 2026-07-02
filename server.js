@@ -1,10 +1,11 @@
-import gc from "./global-constants.js";
+import { thisAddon } from "./common-utils.js";
 
 import { serveHTTPS, getHttpsBaseUrl } from "./https.js";
 import stremio from 'stremio-addon-sdk';
 const { addonBuilder, serveHTTP } = stremio;
 import { manifest } from './manifest.js';
 import { proxyImageHandler } from './handlers/proxy.js';
+import { localSubtitleRoute, localSubtitleWriteRoute } from './handlers/localSubsRoute.js';
 import axios from 'axios';
 
 // Import our modular handlers
@@ -17,18 +18,18 @@ import { subtitlesHandler } from './handlers/subtitles.js';
 const JELLYFIN_URL = process.env.JELLYFIN_URL;
 const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY;
 const JELLYFIN_USER_NAME = process.env.JELLYFIN_USER_NAME;
-const PORT = process.env.PORT || 7000;
-const HTTPS_PORT = process.env.HTTPS_PORT || 7001;
+const PORT = thisAddon.httpPort;
+const HTTPS_PORT = thisAddon.httpsPort;
 // Inject the full https URL into the global environment
 process.env.HTTPS_BASE_URL = `${getHttpsBaseUrl(HTTPS_PORT)}`;
 
 console.log(`**********`);
 console.log(`**********`);
 console.log(`**********`);
-console.log(`Starting ${gc.thisAddonName} [v${gc.thisAddonVersion}].`);
+console.log(`Starting ${thisAddon.name} [v${thisAddon.version}].`);
 
 if (!JELLYFIN_URL || !JELLYFIN_API_KEY) {
-    console.log("❌ Missing Jellyfin environment variables! Check your .env file.");
+    console.error("Missing Jellyfin environment variables! Check your .env file.");
     process.exit(1);
 }
 
@@ -54,7 +55,7 @@ async function main() {
         const user = response.data.find(u => u.Name.toLowerCase() === JELLYFIN_USER_NAME.toLowerCase());
 
         if (!user) {
-            console.log(`❌ Could not find a Jellyfin user named "${JELLYFIN_USER_NAME}"`);
+            console.error(`Could not find a Jellyfin user named "${JELLYFIN_USER_NAME}"`);
             process.exit(1);
         }
 
@@ -69,10 +70,18 @@ async function main() {
         // THE JELLYFIN IMAGE PROXY
         // ==========================================
         app.get('/proxy-image', proxyImageHandler);
+
+        // ==========================================
+        // STANDALONE LOCAL SUBTITLES (Phase 1)
+        // Serves files from LOCAL_SUBS_DIR over the same HTTPS endpoint.
+        // ==========================================
+        app.get('/local-subtitle', localSubtitleRoute);
+        app.post('/local-subtitle', localSubtitleWriteRoute);   // Step 4a: accept + place a translated subtitle
+
         await serveHTTPS(app, HTTPS_PORT);
 
     } catch (error) {
-        console.log("❌ Failed to start the server:", error.message);
+        console.error("Failed to start the server:", error.message);
         process.exit(1);
     }
 }

@@ -20,7 +20,7 @@ export async function proxyImageHandler(req, res) {
         imageResponse.data.pipe(res);
 
     } catch (error) {
-        console.log("❌ Proxy error:", error.message);
+        console.error("Proxy error:", error.message, jellyfinUrl);
         res.status(500).send("Error fetching image from Jellyfin");
     }
 }

@@ -2,6 +2,11 @@ services:
   stremio-jellyfin-bridge:
     build: .
     container_name: stremio-jellyfin-bridge
+    # Run the container process as this uid:gid (from .env) so subtitle files the
+    # bridge places are owned by your host user, not root. Set PUID/PGID to your
+    # host user's `id -u` / `id -g`. Left unset it defaults to 0:0 (root) — i.e.
+    # unchanged behaviour until you opt in.
+    user: "${PUID:-0}:${PGID:-0}"
     # CRITICAL: Bypasses the virtual bridge so the script finds the real LAN IP
     network_mode: "host"
     # Automatically pulls the variables into the container
@@ -9,3 +14,23 @@ services:
       - .env
     # Tells Ubuntu to automatically restart the bridge if the server reboots
     restart: unless-stopped
+    # ------------------------------------------------------------------
+    # STANDALONE SUBTITLES (optional) — controlled by ONE .env variable,
+    # LOCAL_SUBS_DIR, set to the folder where your subtitle files live:
+    #   unset        -> feature disabled
+    #   set to path  -> that folder is mounted read-WRITE (the bridge both
+    #                   serves existing subtitles and PLACES translated ones
+    #                   it receives via POST /local-subtitle)
+    # The internal mount path (/subs) is handled here; users never touch it.
+    # This file never needs editing.
+    # ------------------------------------------------------------------
+    environment:
+      # A writable HOME for the non-root user above, so `npm start` (npm cache)
+      # doesn't fail with EACCES when running as an arbitrary uid.
+      - HOME=/tmp
+      # In the container the app reads the fixed mount path — but only when
+      # LOCAL_SUBS_DIR was actually set (keeps the feature off by default).
+      # This overrides the host path that env_file brings in.
+      - LOCAL_SUBS_DIR=${LOCAL_SUBS_DIR:+/subs}
+    volumes:
+      - ${LOCAL_SUBS_DIR:-./subs}:/subs

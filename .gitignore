@@ -1,2 +1,9 @@
 node_modules/
 .env
+dist/
+/_localgit/
+
+# Default standalone-subtitles folder: keep the folder (via the tracked
+# README) and ignore the actual subtitle files
+/subs/*
+!/subs/README.txt

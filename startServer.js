@@ -8,6 +8,7 @@ const envFilePath = join(import.meta.dirname, '.env');
 try {
     // Load the variables. This will work natively if the file exists
     process.loadEnvFile(envFilePath);
+    console.log(`Loaded .env file from: ${envFilePath}`);
 } catch (err) {
     // If the file is missing (like inside Docker), we just catch the error 
     // and let the app rely on the variables Docker Compose already injected!

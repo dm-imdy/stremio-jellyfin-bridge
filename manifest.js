@@ -1,10 +1,10 @@
-import gc from "./global-constants.js";
+import { thisAddon } from "./common-utils.js";
 
 export const manifest = {
-    id: "com.imdy-apps.jellyfinbridge",
-    version: gc.thisAddonVersion,
-    name: gc.thisAddonName,
-    description: "Integrates your local Jellyfin library with Stremio for seamless catalog browsing and streaming.",
+    id: thisAddon.id,
+    version: thisAddon.version,
+    name: thisAddon.name,
+    description: thisAddon.desc,
     types: ["movie", "series"],
     
     // We prefix our custom IDs so they don't clash with IMDb/Cinemeta IDs

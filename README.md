@@ -9,6 +9,7 @@ A lightweight, robust Node.js addon that seamlessly integrates your local Jellyf
 * 📺 **Series Support:** Season and episode resolution. Automatically maps local episodes to Stremio's UI, pulling native thumbnails and falling back to the show's backdrop when needed.
 * 🚀 **Smart Playback Options:** Offers both **Direct Play** (raw, uncompressed file delivery for maximum quality on capable devices like the NVIDIA Shield) and **Transcode** (HLS fallback for universal compatibility).
 * 📝 **Native Subtitle Injection:** Automatically searches your Jellyfin library, extracts attached `.srt` or embedded subtitle tracks, and pipes them directly into Stremio's video player.
+* 🗂️ **Standalone Local Subtitles:** Bring your own subtitle files — hand-synced tracks, fan translations, alternate timings — and serve them for *any* title you play in Stremio, matched purely by its IMDb id. The video itself can come from anywhere — Stremio's built-in Cinemeta catalog, your Jellyfin library, or any other addon's stream — because subtitles attach by id, independent of where (or whether) the media exists in Jellyfin. Files are organized one folder per title with a simple naming convention, and a companion write endpoint (with an optional shared secret) lets tools drop finished translations straight into the store. Fully opt-in; see **Standalone Subtitles** below.
 * 🖼️ **Dynamic Image Proxying:** Features a custom, memory-efficient Express proxy that catches Jellyfin image URLs mid-air, stripping restrictive `Content-Disposition: attachment` security headers so posters and backgrounds render natively in Stremio.
 * 🔒 **Zero-Config Local HTTPS:** Built-in dynamic IP detection and automatic wildcard SSL certificate generation (via `local-ip.medicmobile.org`). This satisfies Stremio's strict mixed-content security requirements, allowing seamless installation across Windows PCs, Web interfaces, and Android TV environments.
 
@@ -54,6 +55,10 @@ HTTPS_PORT=7001
 
 # Set to 'false' to hide Jellyfin rows from Stremio's Discover page
 SHOW_CATALOG=true
+
+# (Optional) Serve your own standalone subtitle files, independent of
+# Jellyfin — see the "Standalone Subtitles" section. Leave unset to disable.
+# LOCAL_SUBS_DIR=/path/to/subtitles
 ```
 
 
@@ -100,11 +105,84 @@ If you prefer to run the Node.js application directly on your host machine witho
    ```
    Copy this URL, paste it into Stremio's Addon Search Bar, and click **Install**.
 
+## 🗂️ Standalone Subtitles
+
+Serve subtitle files you keep locally on the bridge — hand-synced versions, fan translations, alternate timings — for **any** title you play in Stremio, matched purely by its **IMDb id**. The video can come from anywhere: Stremio's built-in **Cinemeta** catalog, your Jellyfin library, or any other addon's stream. Because matching is by id alone, the title doesn't even need to exist in Jellyfin — and this covers what Jellyfin can't do on its own, since it only serves subtitles attached to a video file (embedded tracks, or sidecars next to the media), never standalone ones.
+
+It is **off by default** and fully opt-in: until you point it at a folder, nothing changes.
+
+### Enabling it
+
+Set one variable to the folder where your subtitle files live:
+
+```env
+LOCAL_SUBS_DIR=/path/to/subtitles
+```
+
+* **Docker:** that host folder is mounted into the container automatically — you never deal with the internal path. Because the bridge can also *write* subtitles here (see the API below), set `PUID`/`PGID` to your host user's `id -u` / `id -g` so placed files are owned by you rather than `root`:
+  ```env
+  PUID=1000
+  PGID=1000
+  ```
+* **Manual:** point `LOCAL_SUBS_DIR` straight at the folder on disk.
+
+### Folder & naming rules
+
+Organize files as **one folder per title**, named by its IMDb id (you may append any readable text after the id — it's ignored when matching). The language is always the last field before the extension; an optional label distinguishes multiple files of the same title and language (and shows on hover in the Stremio desktop app):
+
+```
+subs/
+├── movie/
+│   └── tt0133093.The Matrix/
+│       ├── eng.srt
+│       ├── synced.eng.srt          # label "synced"
+│       └── drift.eng.srt           # label "drift"
+└── series/
+    └── tt0903747.Breaking Bad/
+        ├── S01E05.eng.srt
+        └── S01E05.synced.eng.srt
+```
+
+The complete rules — labels, ignored notes, and common mistakes — ship alongside your subtitles in [`subs/README.txt`](subs/README.txt).
+
+### Writing subtitles via the API (optional)
+
+The bridge also exposes a `POST` endpoint so tools (for example an auto-translation script) can drop a finished subtitle straight into the store, filed and named correctly so it's served immediately:
+
+```
+POST /local-subtitle?type=<movie|series>&id=<ttId[:season:episode]>&lang=<code>&label=<label>&freetext=<name>
+Body: the subtitle text (UTF-8; stored as .srt)
+```
+
+* `type` *(required)* — `movie` or `series`.
+* `id` *(required)* — the IMDb id; for episodes use `tt…:season:episode`.
+* `lang` *(recommended)* — 2/3-letter code; defaults to `JELLYFIN_DEFAULT_EXT_SUBS_LANG` (from `.env`) if omitted.
+* `label` *(optional)* — distinguishes same-language files (e.g. `synced`).
+* `freetext` *(optional)* — a readable name, used only when the title folder is first created.
+
+Writes are **atomic** (a temp file is renamed into place, so a half-written file is never served) and capped at **5 MB**. Success returns `201` with `{ "ok": true, "path": "…" }`.
+
+**Optional shared secret.** Set `LOCAL_SUBS_WRITE_SECRET` and the endpoint rejects any `POST` that doesn't echo it back in an `X-Write-Secret` header:
+
+```env
+LOCAL_SUBS_WRITE_SECRET=some-long-random-string
+```
+
+```bash
+curl -k -X POST \
+  "https://192-168-x-x.local-ip.medicmobile.org:7001/local-subtitle?type=series&id=tt0903747:1:5&lang=fre&label=synced&freetext=Breaking%20Bad" \
+  -H "X-Write-Secret: some-long-random-string" \
+  --data-binary @episode.fre.srt
+```
+
+> ⚠️ This endpoint writes to disk. Keep it **LAN-only** (the bridge is built for local traffic), and set the secret if anything beyond your trusted machines can reach the port.
+
 ## 🏗️ Architecture Notes
 
 * **The SDK Patch:** The bridge automatically patches Stremio's built-in SDK during `npm install` to expose the underlying Express `app` object. This allows the bridge to mount the custom image proxy directly onto the same port as the Stremio manifest handlers.
 * **The Proxy Pipeline:** To prevent Jellyfin from forcing image downloads on Stremio clients, the bridge intercepts all `/Images/Primary` requests. It streams the raw binary data directly to the client while actively stripping the UI attachment headers. No files are saved to the bridge's local disk.
 * **Network Binding:** The server dynamically scans available network interfaces on boot, binding the HTTPS domain specifically to your primary IPv4 LAN address. This ensures the addon routes correctly whether requested by a local desktop or a smart TV over Wi-Fi.
+* **Standalone Subtitle Store:** A small pluggable source layer (`subtitleSources/`) supplies subtitles for any title by IMDb id, regardless of where the video is streamed from; the subtitles handler folds these together with any Jellyfin-native tracks the same title happens to have. The `/local-subtitle` route serves the files over HTTPS behind a path-traversal guard, and its `POST` counterpart accepts new ones — writing them atomically (temp file renamed into place) into a one-folder-per-title store keyed by IMDb id, so reads never observe a partial file.
 
 ## 🛠️ Troubleshooting: Stremio Fails to Install the Addon (`NXDOMAIN` Error)
 

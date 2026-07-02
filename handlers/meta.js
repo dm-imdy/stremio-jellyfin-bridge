@@ -88,7 +88,7 @@ export const metaHandler = async ({ type, id }) => {
         return { meta };
 
     } catch (error) {
-        console.log("❌ Error resolving metadata:", error.message);
+        console.error("Error resolving metadata:", error.message);
         return { meta: {} };
     }
 };

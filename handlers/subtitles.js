@@ -1,9 +1,10 @@
 import axios from 'axios';
+import { getStandaloneSubtitles } from '../subtitleSources/index.js';
 
 // Helper to parse languages robustly
 function parseLanguage(stream) {
     const hints = [stream.Language, stream.DisplayLanguage, stream.Title]
-        .filter(Boolean) 
+        .filter(Boolean)
         .map(s => s.toLowerCase().trim());
 
     for (const hint of hints) {
@@ -24,17 +25,39 @@ export const subtitlesHandler = async ({ type, id }) => {
     const JELLYFIN_URL = process.env.JELLYFIN_URL;
     const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY;
     const JELLYFIN_USER_ID = process.env.JELLYFIN_USER_ID;
+    const httpsBase = process.env.HTTPS_BASE_URL;
 
-    let jellyfinItemId = null;
+    // We accumulate from every source into one list, then return it once.
+    const subtitles = [];
 
+    // ==========================================
+    // 1) STANDALONE SUBTITLES (independent of Jellyfin)
+    //    Inert unless a source is configured (Phase 1: LOCAL_SUBS_DIR).
+    //    Runs for `tt` ids and must NOT depend on the item existing in Jellyfin.
+    // ==========================================
+    if (id.startsWith('tt')) {
+        try {
+            const standalone = await getStandaloneSubtitles({ type, id, httpsBase });
+            if (standalone.length > 0) {
+                console.log(`[Subtitles] Found ${standalone.length} standalone subtitle(s) | id: ${id}`);
+                subtitles.push(...standalone);
+            }
+        } catch (error) {
+            console.error(`[Subtitles] Standalone source error: ${error.message} | id: ${id}`);
+        }
+    }
+
+    // ==========================================
+    // 2) JELLYFIN SUBTITLES (embedded / sidecar tracks on the media item)
+    // ==========================================
     try {
-        // ==========================================
-        // RESOLVE THE ID (Using the new robust logic)
-        // ==========================================
+        let jellyfinItemId = null;
+
+        // ----- RESOLVE THE ID -----
         if (id.startsWith('jf:')) {
             jellyfinItemId = id.replace('jf:', '');
-        } 
-        else if (id.startsWith('tt')) { 
+        }
+        else if (id.startsWith('tt')) {
             const parts = id.split(':');
             const imdbId = parts[0];
             const season = parts[1];
@@ -43,23 +66,23 @@ export const subtitlesHandler = async ({ type, id }) => {
             // Safely search Jellyfin's external IDs
             const searchRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items`, {
                 headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
-                params: { 
-                    Recursive: true, 
-                    AnyProviderIdEquals: imdbId, 
+                params: {
+                    Recursive: true,
+                    AnyProviderIdEquals: imdbId,
                     IncludeItemTypes: type === 'movie' ? 'Movie' : 'Series',
-                    Fields: 'ProviderIds' 
+                    Fields: 'ProviderIds'
                 }
             });
 
-            // STRICT VALIDATION
-            const matchedItem = searchRes.data.Items?.find(item => 
+            // STRICT VALIDATION (Step 1: Root Level Match)
+            const matchedItem = searchRes.data.Items?.find(item =>
                 item.ProviderIds && item.ProviderIds.Imdb === imdbId
             );
 
             if (matchedItem) {
                 if (type === 'movie') {
                     jellyfinItemId = matchedItem.Id;
-                } 
+                }
                 else if (type === 'series' && season && episode) {
                     const epRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items`, {
                         headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
@@ -68,56 +91,64 @@ export const subtitlesHandler = async ({ type, id }) => {
                             ParentIndexNumber: season,
                             IndexNumber: episode,
                             IncludeItemTypes: 'Episode',
-                            Recursive: true
+                            Recursive: true,
+                            Fields: 'ParentIndexNumber,IndexNumber'
                         }
                     });
 
-                    if (epRes.data.Items && epRes.data.Items.length > 0) {
-                        jellyfinItemId = epRes.data.Items[0].Id;
+                    // STRICT VALIDATION (Step 2: Episode Level Index Match)
+                    const targetSeason = parseInt(season, 10);
+                    const targetEpisode = parseInt(episode, 10);
+
+                    const matchedEpisode = epRes.data.Items?.find(ep =>
+                        ep.ParentIndexNumber === targetSeason && ep.IndexNumber === targetEpisode
+                    );
+
+                    if (matchedEpisode) {
+                        jellyfinItemId = matchedEpisode.Id;
+                    } else {
+                        console.log(`[Subtitles] ⚠️ Strict check failed: No exact match for S${targetSeason}E${targetEpisode} | id: ${id}`);
                     }
                 }
             }
         }
 
-        if (!jellyfinItemId) {
-            return { subtitles: [] };
-        }
-
-        // ==========================================
-        // FETCH SUBTITLE TRACKS
-        // ==========================================
-        const itemRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items/${jellyfinItemId}`, {
-            headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
-            params: { Fields: 'MediaSources' }
-        });
-
-        const item = itemRes.data;
-        const mappedSubtitles = [];
-
-        if (item.MediaSources && item.MediaSources.length > 0) {
-            const mediaSource = item.MediaSources[0];
-            const validCodecs = ['srt', 'subrip', 'vtt', 'ass', 'ssa'];
-
-            mediaSource.MediaStreams.forEach(stream => {
-                if (stream.Type === 'Subtitle' && validCodecs.includes(stream.Codec?.toLowerCase())) {
-                    const subUrl = `${JELLYFIN_URL}/Videos/${jellyfinItemId}/${mediaSource.Id}/Subtitles/${stream.Index}/0/Stream.${stream.Codec === 'vtt' ? 'vtt' : 'srt'}?api_key=${JELLYFIN_API_KEY}`;
-                    
-                    const langCode = parseLanguage(stream);
-
-                    mappedSubtitles.push({
-                        id: `[JellyfinBridge]${stream.Index}_${stream.DisplayTitle}`,
-                        url: subUrl,
-                        lang: langCode
-                    });
-                }
+        // ----- FETCH SUBTITLE TRACKS -----
+        // NOTE: we deliberately do NOT early-return when jellyfinItemId is null.
+        // Any standalone subtitles collected above must still be returned for
+        // titles that aren't in Jellyfin at all.
+        if (jellyfinItemId) {
+            const itemRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items/${jellyfinItemId}`, {
+                headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
+                params: { Fields: 'MediaSources' }
             });
+
+            const item = itemRes.data;
+
+            if (item.MediaSources && item.MediaSources.length > 0) {
+                const mediaSource = item.MediaSources[0];
+                const validCodecs = ['srt', 'subrip', 'vtt', 'ass', 'ssa'];
+
+                mediaSource.MediaStreams.forEach(stream => {
+                    if (stream.Type === 'Subtitle' && validCodecs.includes(stream.Codec?.toLowerCase())) {
+                        const subUrl = `${JELLYFIN_URL}/Videos/${jellyfinItemId}/${mediaSource.Id}/Subtitles/${stream.Index}/0/Stream.${stream.Codec === 'vtt' ? 'vtt' : 'srt'}?api_key=${JELLYFIN_API_KEY}`;
+
+                        const langCode = parseLanguage(stream);
+
+                        subtitles.push({
+                            id: `[JellyfinBridge]${stream.Index}_${stream.DisplayTitle}`,
+                            url: subUrl,
+                            lang: langCode
+                        });
+                    }
+                });
+            }
         }
-
-        console.log(`[Subtitles] Found ${mappedSubtitles.length} subtitle tracks.`);
-        return { subtitles: mappedSubtitles };
-
     } catch (error) {
-        console.log("❌ Error resolving subtitles:", error.message);
-        return { subtitles: [] };
+        console.error('Error resolving Jellyfin subtitles:', error.message);
+        // fall through — still return whatever standalone subs we already have
     }
+
+    console.log(`[Subtitles] Returning ${subtitles.length} subtitle track(s) total. | id: ${id}`);
+    return { subtitles };
 };

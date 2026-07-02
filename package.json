@@ -1,8 +1,9 @@
 {
   "name": "stremio-jellyfin-bridge",
-  "version": "1.0.0",
+  "version": "1.1.0",
+  "addonId": "com.imdy-apps.jellyfinbridge",
+  "description": "Integrates your local Jellyfin library with Stremio for seamless catalog browsing and streaming.",
   "type": "module",
-  "description": "A bridge between Stremio and a local Jellyfin instance",
   "main": "startServer.js",
   "scripts": {
     "start": "node startServer.js",
