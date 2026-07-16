@@ -1,7 +1,11 @@
 import axios from 'axios';
+import { isJellyfinConfigured } from '../global-constants.js';
 
 export const metaHandler = async ({ type, id }) => {
     console.log(`[Meta] Request for ${type} | id: ${id}`);
+
+    // Subtitles-only mode: no Jellyfin metadata to resolve.
+    if (!isJellyfinConfigured()) return { meta: {} };
 
     if (!id.startsWith('jf:')) {
         return { meta: {} };

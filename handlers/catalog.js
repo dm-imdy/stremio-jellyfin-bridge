@@ -1,7 +1,11 @@
 import axios from 'axios';
+import { isJellyfinConfigured } from '../global-constants.js';
 
 export const catalogHandler = async ({ type, id, extra }) => {
     console.log(`[Catalog] Request for ${type} | id: ${id} | search: ${extra.search || 'none'}`);
+
+    // Subtitles-only mode: no Jellyfin, so there's no catalog to serve.
+    if (!isJellyfinConfigured()) return { metas: [] };
 
     const isSearch = extra && extra.search;
     const hideDiscover = process.env.SHOW_CATALOG === 'false';

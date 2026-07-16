@@ -45,6 +45,7 @@
 
 import { readdir, mkdir, writeFile, rename } from 'fs/promises';
 import path from 'path';
+import { getDefaultSubsLang } from '../global-constants.js';
 
 const SUBS_DIR = process.env.LOCAL_SUBS_DIR;
 const SUB_EXTS = ['.srt', '.vtt', '.ass', '.ssa'];
@@ -63,7 +64,7 @@ function toLangCode(seg) {
         if (code.length === 3) return code;     // already ISO 639-2 (e.g. fre, eng)
         if (LANG_MAP[code]) return LANG_MAP[code];
     }
-    return process.env.JELLYFIN_DEFAULT_EXT_SUBS_LANG || 'und';
+    return getDefaultSubsLang();
 }
 
 // Resolve a title folder: named either exactly "<imdbId>" or "<imdbId>.<free
@@ -211,7 +212,7 @@ function sanitizeLabel(s) {
 
 // Write a subtitle for `id` and return the absolute path written.
 //   { type:'movie'|'series', id:'tt..[:s:e]', lang, label='', freetext='', content }
-// `lang` defaults to JELLYFIN_DEFAULT_EXT_SUBS_LANG (the read-side default) when omitted.
+// `lang` defaults to DEFAULT_SUBS_LANG (the read-side default) when omitted.
 export async function place({ type, id, lang, label = '', freetext = '', content }) {
     if (!isEnabled()) throw new Error('LOCAL_SUBS_DIR not configured');
     if (type !== 'movie' && type !== 'series') throw new Error(`bad type: ${type}`);
@@ -233,8 +234,8 @@ export async function place({ type, id, lang, label = '', freetext = '', content
     await mkdir(dir, { recursive: true });
 
     // Build "[SxxExx.][label.]<lang>.srt". Default language comes from
-    // JELLYFIN_DEFAULT_EXT_SUBS_LANG, matching what the read side falls back to.
-    const langCode = String(lang || process.env.JELLYFIN_DEFAULT_EXT_SUBS_LANG || 'und').toLowerCase();
+    // DEFAULT_SUBS_LANG, matching what the read side falls back to.
+    const langCode = String(lang || getDefaultSubsLang()).toLowerCase();
     const lbl = sanitizeLabel(label);
     let name = '';
     if (type === 'series') {

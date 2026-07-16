@@ -1,6 +1,11 @@
 # Stremio-Jellyfin Bridge
 
-A lightweight, robust Node.js addon that seamlessly integrates your local Jellyfin server into Stremio. Designed for secure, local network streaming, this bridge brings your personal media library directly into the Stremio UI with full metadata, native subtitles, and automatic local HTTPS support.
+A lightweight, self-hosted Node.js addon for Stremio with **two independent features** — run either one on its own, or both together:
+
+* **Local Subtitles** — serve your own subtitle files (hand-synced tracks, fan translations, alternate timings) for *any* title you play in Stremio, matched by IMDb id, no matter where the video streams from.
+* **Jellyfin Bridge** — browse and stream your local Jellyfin library directly in the Stremio UI, with full metadata, native subtitles, and smart playback options.
+
+Each feature is enabled independently through configuration, and everything runs securely on your LAN with automatic, zero-config local HTTPS.
 
 ## ✨ Features
 
@@ -9,16 +14,21 @@ A lightweight, robust Node.js addon that seamlessly integrates your local Jellyf
 * 📺 **Series Support:** Season and episode resolution. Automatically maps local episodes to Stremio's UI, pulling native thumbnails and falling back to the show's backdrop when needed.
 * 🚀 **Smart Playback Options:** Offers both **Direct Play** (raw, uncompressed file delivery for maximum quality on capable devices like the NVIDIA Shield) and **Transcode** (HLS fallback for universal compatibility).
 * 📝 **Native Subtitle Injection:** Automatically searches your Jellyfin library, extracts attached `.srt` or embedded subtitle tracks, and pipes them directly into Stremio's video player.
-* 🗂️ **Standalone Local Subtitles:** Bring your own subtitle files — hand-synced tracks, fan translations, alternate timings — and serve them for *any* title you play in Stremio, matched purely by its IMDb id. The video itself can come from anywhere — Stremio's built-in Cinemeta catalog, your Jellyfin library, or any other addon's stream — because subtitles attach by id, independent of where (or whether) the media exists in Jellyfin. Files are organized one folder per title with a simple naming convention, and a companion write endpoint (with an optional shared secret) lets tools drop finished translations straight into the store. Fully opt-in; see **Standalone Subtitles** below.
+* 🗂️ **Local Subtitles:** Bring your own subtitle files — hand-synced tracks, fan translations, alternate timings — and serve them for *any* title you play in Stremio, matched purely by its IMDb id. The video itself can come from anywhere — Stremio's built-in Cinemeta catalog, your Jellyfin library, or any other addon's stream — because subtitles attach by id, independent of where (or whether) the media exists in Jellyfin. Files are organized one folder per title with a simple naming convention, and a companion write endpoint (with an optional shared secret) lets tools drop finished translations straight into the store. Fully opt-in; see **Local Subtitles** below.
 * 🖼️ **Dynamic Image Proxying:** Features a custom, memory-efficient Express proxy that catches Jellyfin image URLs mid-air, stripping restrictive `Content-Disposition: attachment` security headers so posters and backgrounds render natively in Stremio.
 * 🔒 **Zero-Config Local HTTPS:** Built-in dynamic IP detection and automatic wildcard SSL certificate generation (via `local-ip.medicmobile.org`). This satisfies Stremio's strict mixed-content security requirements, allowing seamless installation across Windows PCs, Web interfaces, and Android TV environments.
 
 ## 📋 Prerequisites
 
-* A running **Jellyfin Server** (v10.8.0 or higher recommended) accessible on your local network.
-* An API Key generated from your Jellyfin Dashboard.
-* **For Docker Installation (Recommended):** Docker and Docker Compose installed on a Linux host (required for host networking).
-* **For Manual Installation:** **Node.js** (v20.12.0 or higher required).
+At least one of the two features should be configured (see [`.env.example`](.env.example)):
+
+* **Local Subtitles (optional):** just a folder of subtitle files on the host — no external service required.
+* **Jellyfin Bridge (optional):** a running **Jellyfin Server** (v10.8.0 or higher recommended) accessible on your LAN, plus an API key from its Dashboard. Set all three Jellyfin variables together — a partial Jellyfin config is treated as an error.
+
+For the runtime itself:
+
+* **Docker Installation (Recommended):** Docker and Docker Compose on a Linux host (required for host networking).
+* **Manual Installation:** **Node.js** (v20.12.0 or higher required).
 
 ## 🚀 Installation & Setup
 
@@ -35,30 +45,19 @@ cp .env.example .env
 nano .env
 ```
 
-Populate the `.env` file with your details:
+Enable the feature(s) you want. See [`.env.example`](.env.example) for the fully-commented list (defaults, the subtitle write secret, Docker `PUID`/`PGID`, timezone, etc.); the essentials are:
 ```env
-# Your local Jellyfin Server URL
-JELLYFIN_URL=http://192.168.X.X:8096
+# --- Local Subtitles (optional): folder of your own subtitle files ---
+# LOCAL_SUBS_DIR=/path/to/subtitles
 
-# API Key generated from Jellyfin Dashboard -> Advanced -> API Keys
-JELLYFIN_API_KEY=your_api_key_here
-
-# The specific Jellyfin user the bridge will act as
-JELLYFIN_USER_NAME=your_username
-
-# The default language code for subtitles files without proper naming convention
-JELLYFIN_DEFAULT_EXT_SUBS_LANG=eng
+# --- Jellyfin Bridge (optional): set all three together, or none ---
+# JELLYFIN_URL=http://192.168.X.X:8096
+# JELLYFIN_API_KEY=your_api_key_here
+# JELLYFIN_USER_NAME=your_username
 
 # Ports for the Node server
 PORT=7000
 HTTPS_PORT=7001
-
-# Set to 'false' to hide Jellyfin rows from Stremio's Discover page
-SHOW_CATALOG=true
-
-# (Optional) Serve your own standalone subtitle files, independent of
-# Jellyfin — see the "Standalone Subtitles" section. Leave unset to disable.
-# LOCAL_SUBS_DIR=/path/to/subtitles
 ```
 
 
@@ -105,7 +104,7 @@ If you prefer to run the Node.js application directly on your host machine witho
    ```
    Copy this URL, paste it into Stremio's Addon Search Bar, and click **Install**.
 
-## 🗂️ Standalone Subtitles
+## 🗂️ Local Subtitles
 
 Serve subtitle files you keep locally on the bridge — hand-synced versions, fan translations, alternate timings — for **any** title you play in Stremio, matched purely by its **IMDb id**. The video can come from anywhere: Stremio's built-in **Cinemeta** catalog, your Jellyfin library, or any other addon's stream. Because matching is by id alone, the title doesn't even need to exist in Jellyfin — and this covers what Jellyfin can't do on its own, since it only serves subtitles attached to a video file (embedded tracks, or sidecars next to the media), never standalone ones.
 
@@ -156,7 +155,7 @@ Body: the subtitle text (UTF-8; stored as .srt)
 
 * `type` *(required)* — `movie` or `series`.
 * `id` *(required)* — the IMDb id; for episodes use `tt…:season:episode`.
-* `lang` *(recommended)* — 2/3-letter code; defaults to `JELLYFIN_DEFAULT_EXT_SUBS_LANG` (from `.env`) if omitted.
+* `lang` *(recommended)* — 2/3-letter code; defaults to `DEFAULT_SUBS_LANG` (from `.env`) if omitted.
 * `label` *(optional)* — distinguishes same-language files (e.g. `synced`).
 * `freetext` *(optional)* — a readable name, used only when the title folder is first created.
 

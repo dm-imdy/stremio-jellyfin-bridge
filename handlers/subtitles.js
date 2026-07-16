@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { getStandaloneSubtitles } from '../subtitleSources/index.js';
+import { isJellyfinConfigured, getDefaultSubsLang } from '../global-constants.js';
 
 // Helper to parse languages robustly
 function parseLanguage(stream) {
@@ -16,7 +17,7 @@ function parseLanguage(stream) {
         if (hint.startsWith('ru')) return 'rus';
         if (hint.startsWith('ar')) return 'ara';
     }
-    return process.env.JELLYFIN_DEFAULT_EXT_SUBS_LANG || 'und';
+    return getDefaultSubsLang();
 }
 
 export const subtitlesHandler = async ({ type, id }) => {
@@ -49,8 +50,9 @@ export const subtitlesHandler = async ({ type, id }) => {
 
     // ==========================================
     // 2) JELLYFIN SUBTITLES (embedded / sidecar tracks on the media item)
+    //    Skipped entirely in subtitles-only mode.
     // ==========================================
-    try {
+    if (isJellyfinConfigured()) try {
         let jellyfinItemId = null;
 
         // ----- RESOLVE THE ID -----

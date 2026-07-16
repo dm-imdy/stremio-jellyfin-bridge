@@ -1,7 +1,11 @@
 import axios from 'axios';
+import { isJellyfinConfigured } from '../global-constants.js';
 
 export const streamHandler = async ({ type, id }) => {
     console.log(`[Stream] Request for ${type} | id: ${id}`);
+
+    // Subtitles-only mode: no Jellyfin streams to serve.
+    if (!isJellyfinConfigured()) return { streams: [] };
 
     const JELLYFIN_URL = process.env.JELLYFIN_URL;
     const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY;
