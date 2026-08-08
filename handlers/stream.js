@@ -51,12 +51,12 @@ export const streamHandler = async ({ type, id }) => {
                     const epRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items`, {
                         headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
                         params: {
-                            ParentId: matchedItem.Id,
-                            ParentIndexNumber: season,
-                            IndexNumber: episode,
+                            // An Episode's parent is its SEASON, not the Series, so
+                            // ParentId=<seriesId> matches nothing. Ask for episodes
+                            // recursively and narrow by SeriesId instead.
                             IncludeItemTypes: 'Episode',
                             Recursive: true,
-                            Fields: 'ParentIndexNumber,IndexNumber'
+                            Fields: 'ParentIndexNumber,IndexNumber,SeriesId'
                         }
                     });
 
@@ -64,7 +64,8 @@ export const streamHandler = async ({ type, id }) => {
                     const targetSeason = parseInt(season, 10);
                     const targetEpisode = parseInt(episode, 10);
 
-                    const matchedEpisode = epRes.data.Items?.find(ep => 
+                    const matchedEpisode = epRes.data.Items?.find(ep =>
+                        ep.SeriesId === matchedItem.Id &&
                         ep.ParentIndexNumber === targetSeason && ep.IndexNumber === targetEpisode
                     );
 
