@@ -22,8 +22,17 @@ const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY;
 const JELLYFIN_USER_NAME = process.env.JELLYFIN_USER_NAME;
 const PORT = thisAddon.httpPort;
 const HTTPS_PORT = thisAddon.httpsPort;
-// Inject the full https URL into the global environment
-process.env.HTTPS_BASE_URL = `${getHttpsBaseUrl(HTTPS_PORT)}`;
+// Inject the full https URL into the global environment.
+//
+// By default this is derived from the host's LAN address, giving something like
+// https://192-168-1-50.local-ip.medicmobile.org:7001, and that host is stamped
+// into every poster and backdrop URL the addon emits. It does not resolve on
+// networks whose resolver enables DNS rebind protection, because it is a public
+// name that answers with a private IP -- so no artwork loads at all.
+//
+// PUBLIC_BASE_URL overrides it, which is also what you want whenever the addon
+// sits behind your own reverse proxy or hostname.
+process.env.HTTPS_BASE_URL = process.env.PUBLIC_BASE_URL || `${getHttpsBaseUrl(HTTPS_PORT)}`;
 
 console.log(`**********`);
 console.log(`**********`);
