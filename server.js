@@ -31,8 +31,13 @@ const HTTPS_PORT = thisAddon.httpsPort;
 // name that answers with a private IP -- so no artwork loads at all.
 //
 // PUBLIC_BASE_URL overrides it, which is also what you want whenever the addon
-// sits behind your own reverse proxy or hostname.
-process.env.HTTPS_BASE_URL = process.env.PUBLIC_BASE_URL || `${getHttpsBaseUrl(HTTPS_PORT)}`;
+// sits behind your own reverse proxy or hostname. Trailing slashes are trimmed
+// so the emitted URLs never end up with a doubled separator.
+//
+// NOTE: HTTPS_BASE_URL is derived here, not user config — anything set for it
+// in .env is overwritten on every start. PUBLIC_BASE_URL is the only override.
+const publicBase = process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, '');
+process.env.HTTPS_BASE_URL = publicBase || `${getHttpsBaseUrl(HTTPS_PORT)}`;
 
 console.log(`**********`);
 console.log(`**********`);
@@ -132,7 +137,7 @@ async function main() {
             'SHOW_CATALOG',
             'DEFAULT_SUBS_LANG', 'JELLYFIN_DEFAULT_EXT_SUBS_LANG',
             'LOCAL_SUBS_DIR', 'LOCAL_SUBS_WRITE_SECRET',
-            'PORT', 'HTTPS_PORT',
+            'PUBLIC_BASE_URL', 'PORT', 'HTTPS_PORT',
         ];
         const SECRET_KEYS = new Set(['JELLYFIN_API_KEY', 'LOCAL_SUBS_WRITE_SECRET']);
 
@@ -143,6 +148,12 @@ async function main() {
             envLines.push(`  ${key}=${SECRET_KEYS.has(key) ? '********' : val}`);
         }
         console.debug(envLines.join('\n'));
+
+        // The base URL actually stamped into the content URLs the addon emits
+        // (posters, backdrops, local subtitles). When PUBLIC_BASE_URL is set this
+        // differs from the "HTTPS addon is accessible at" line above — and it is
+        // the first thing to check if artwork or subtitles fail to load.
+        console.log(`Advertising base URL: ${process.env.HTTPS_BASE_URL}`);
 
         // If the Local Subtitles feature is enabled, announce its base folder.
         const localSubsDir = process.env.LOCAL_SUBS_DIR;
