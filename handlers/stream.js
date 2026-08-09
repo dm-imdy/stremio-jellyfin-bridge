@@ -48,23 +48,25 @@ export const streamHandler = async ({ type, id }) => {
                     console.log(`[Stream] Found exact local Movie match: ${matchedItem.Name}`);
                 } 
                 else if (type === 'series' && season && episode) {
-                    const epRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items`, {
+                    const targetSeason = parseInt(season, 10);
+                    const targetEpisode = parseInt(episode, 10);
+
+                    // Purpose-built endpoint: returns ONLY the requested season's
+                    // episodes, and resolves through the series->episode relation
+                    // instead of ParentId/AncestorIds scoping (which can be
+                    // incomplete on libraries migrated from older Jellyfin versions).
+                    const epRes = await axios.get(`${JELLYFIN_URL}/Shows/${matchedItem.Id}/Episodes`, {
                         headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
                         params: {
-                            ParentId: matchedItem.Id,
-                            ParentIndexNumber: season,
-                            IndexNumber: episode,
-                            IncludeItemTypes: 'Episode',
-                            Recursive: true,
+                            userId: JELLYFIN_USER_ID,
+                            season: targetSeason,
                             Fields: 'ParentIndexNumber,IndexNumber'
                         }
                     });
 
                     // STRICT VALIDATION (Step 2: Episode Level Index Match)
-                    const targetSeason = parseInt(season, 10);
-                    const targetEpisode = parseInt(episode, 10);
-
                     const matchedEpisode = epRes.data.Items?.find(ep => 
+                        ep.SeriesId === matchedItem.Id &&
                         ep.ParentIndexNumber === targetSeason && ep.IndexNumber === targetEpisode
                     );
 
