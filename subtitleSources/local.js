@@ -123,6 +123,11 @@ export async function find({ type, id, httpsBase }) {
 
     const [imdbId, season, episode] = id.split(':');
 
+    // Without season+episode we can't identify a series file. Bail out before
+    // touching the filesystem, rather than falling through to the movie branch
+    // below — which matches every file in the folder.
+    if (type === 'series' && (!season || !episode)) return [];
+
     // Resolve the per-title folder (same "<imdbId>[.<free text>]" convention
     // for movies and series).
     const titleFolder = await resolveTitleFolder(path.join(SUBS_DIR, type), imdbId);
@@ -136,7 +141,7 @@ export async function find({ type, id, httpsBase }) {
     // Series: files are keyed by the episode SxxExx, which also seeds the id.
     let matcherToken = null;
     let idMatcher = imdbId;
-    if (type === 'series' && season && episode) {
+    if (type === 'series') {
         const s = String(season).padStart(2, '0');
         const e = String(episode).padStart(2, '0');
         matcherToken = `S${s}E${e}`;
