@@ -127,12 +127,15 @@ export const streamHandler = async ({ type, id }) => {
         const gb    = bytes / 1073741824;
         const sizeS = bytes ? (gb >= 1 ? gb.toFixed(2) + ' GB' : (bytes / 1048576).toFixed(0) + ' MB') : '';
         const h     = vid.Height || 0;
-        const resS  = h >= 2000 ? '4K' : h >= 1000 ? '1080p' : h >= 700 ? '720p' : (h ? h + 'p' : '');
+        const resS  = h >= 2000 ? '4K' : h >= 1400 ? '1440p' : h >= 1000 ? '1080p' : h >= 700 ? '720p' : (h ? h + 'p' : '');
         const dims  = (vid.Width && vid.Height) ? (vid.Width + 'x' + vid.Height) : '';
         const codec = (vid.Codec || '').toUpperCase();
         const langs = [...new Set(auds.map(a => a.Language).filter(Boolean))].join('/');
         const chans = auds.length ? (Math.max(...auds.map(a => a.Channels || 0)) + 'ch') : '';
-        const fname = (source && source.Name) ? source.Name : ((source && source.Path ? source.Path : '').split('/').pop() || '');
+        // Split on both separators: a Windows Jellyfin host reports Path as
+        // E:\Media\Shows\Show\Show.S05E05.mkv, so splitting on '/' alone would
+        // hand the whole drive path back instead of the filename.
+        const fname = (source && source.Name) ? source.Name : ((source && source.Path ? source.Path : '').split(/[\\/]/).pop() || '');
         const bitr  = source && source.Bitrate ? (source.Bitrate / 1000000).toFixed(1) + ' Mbps' : '';
         const cont  = (source && source.Container ? source.Container : '').toUpperCase();
 
@@ -142,19 +145,29 @@ export const streamHandler = async ({ type, id }) => {
         const detail = [fname, line2, line3].filter(Boolean).join('\n');
         const label  = 'Jellyfin' + (resS ? '\n' + resS : '');
 
+        // bingeGroup identifies the NATURE of the stream, not the item: Stremio
+        // auto-selects the next episode only when it offers a stream carrying the
+        // same group. Keying it on the per-episode item id can therefore never
+        // match across episodes, and "Play Now" on the next-episode prompt falls
+        // back to the current one. The resolution is deliberately part of the key
+        // so that a show with mixed-quality episodes keeps binging on one tier
+        // instead of silently switching; Direct Play and Transcode stay distinct
+        // so Stremio knows which of the two to carry forward.
+        const groupBase = 'jellyfin' + (resS ? '-' + resS : '');
+
         return {
             streams: [
                 {
                     name: label,
                     description: 'Direct Play\n' + detail,
                     url: directPlayUrl,
-                    behaviorHints: { notWebReady: true, bingeGroup: 'jellyfin-' + jellyfinItemId, videoSize: bytes || undefined, filename: fname }
+                    behaviorHints: { notWebReady: true, bingeGroup: groupBase + '-direct', videoSize: bytes || undefined, filename: fname }
                 },
                 {
                     name: label,
                     description: 'Transcode (web safe)\n' + detail,
                     url: transcodeUrl,
-                    behaviorHints: { notWebReady: false, bingeGroup: 'jellyfin-' + jellyfinItemId, filename: fname }
+                    behaviorHints: { notWebReady: false, bingeGroup: groupBase + '-transcode', filename: fname }
                 }
             ]
         };
