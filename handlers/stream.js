@@ -51,10 +51,13 @@ export const streamHandler = async ({ type, id }) => {
                     const targetSeason = parseInt(season, 10);
                     const targetEpisode = parseInt(episode, 10);
 
-                    // Purpose-built endpoint: returns ONLY the requested season's
-                    // episodes, and resolves through the series->episode relation
-                    // instead of ParentId/AncestorIds scoping (which can be
-                    // incomplete on libraries migrated from older Jellyfin versions).
+                    // Purpose-built endpoint: honours `season` server-side and
+                    // resolves through the series->episode relation. The old
+                    // /Items + ParentId query silently ignored ParentIndexNumber
+                    // and IndexNumber as filters (it returned the whole season
+                    // and relied on the client-side match below), and matched
+                    // nothing at all where episodes aren't Episode-type children
+                    // of the series -- e.g. loose files in a mixed library.
                     const epRes = await axios.get(`${JELLYFIN_URL}/Shows/${matchedItem.Id}/Episodes`, {
                         headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
                         params: {
