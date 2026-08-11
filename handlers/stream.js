@@ -96,9 +96,11 @@ export const streamHandler = async ({ type, id }) => {
 
         const item = itemRes.data;
         let mediaSourceId = '';
+        let source = null;
         
         if (item.MediaSources && item.MediaSources.length > 0) {
             mediaSourceId = item.MediaSources[0].Id;
+            source = item.MediaSources[0];
         } else {
             console.error(`No MediaSources found for Jellyfin Item: ${jellyfinItemId}`);
             return { streams: [] };
@@ -110,17 +112,64 @@ export const streamHandler = async ({ type, id }) => {
         const directPlayUrl = `${JELLYFIN_URL}/Videos/${jellyfinItemId}/stream?static=true&mediaSourceId=${mediaSourceId}&api_key=${JELLYFIN_API_KEY}`;
         const transcodeUrl = `${JELLYFIN_URL}/Videos/${jellyfinItemId}/master.m3u8?mediaSourceId=${mediaSourceId}&api_key=${JELLYFIN_API_KEY}&VideoCodec=h264&AudioCodec=aac`;
 
+        // Surface the real file details in Stremio.
+        //
+        // Both entries were previously labelled only "Jellyfin / Direct Play" and
+        // "Jellyfin / Transcode (Web Safe)", so the last screen before playback said
+        // nothing about WHICH file was about to play. That matters as soon as a library
+        // holds more than one cut of a title, differing in resolution, audio language
+        // or size.
+        //
+        // MediaSources already carries all of it, so Stremio's name/description are
+        // built from it. bingeGroup keeps next-episode autoplay on the same source.
+        // Movies and episodes share this path.
+        const vid   = (source && source.MediaStreams ? source.MediaStreams : []).find(x => x.Type === 'Video') || {};
+        const auds  = (source && source.MediaStreams ? source.MediaStreams : []).filter(x => x.Type === 'Audio');
+        const bytes = source && source.Size ? source.Size : 0;
+        const gb    = bytes / 1073741824;
+        const sizeS = bytes ? (gb >= 1 ? gb.toFixed(2) + ' GB' : (bytes / 1048576).toFixed(0) + ' MB') : '';
+        const h     = vid.Height || 0;
+        const resS  = h >= 2000 ? '4K' : h >= 1400 ? '1440p' : h >= 1000 ? '1080p' : h >= 700 ? '720p' : (h ? h + 'p' : '');
+        const dims  = (vid.Width && vid.Height) ? (vid.Width + 'x' + vid.Height) : '';
+        const codec = (vid.Codec || '').toUpperCase();
+        const langs = [...new Set(auds.map(a => a.Language).filter(Boolean))].join('/');
+        const chans = auds.length ? (Math.max(...auds.map(a => a.Channels || 0)) + 'ch') : '';
+        // Split on both separators: a Windows Jellyfin host reports Path as
+        // E:\Media\Shows\Show\Show.S05E05.mkv, so splitting on '/' alone would
+        // hand the whole drive path back instead of the filename.
+        const fname = (source && source.Name) ? source.Name : ((source && source.Path ? source.Path : '').split(/[\\/]/).pop() || '');
+        const bitr  = source && source.Bitrate ? (source.Bitrate / 1000000).toFixed(1) + ' Mbps' : '';
+        const cont  = (source && source.Container ? source.Container : '').toUpperCase();
+
+        const SEP  = ' \u2022 ';
+        const line2 = [dims, codec, chans, langs].filter(Boolean).join(SEP);
+        const line3 = [sizeS, bitr, cont].filter(Boolean).join(SEP);
+        const detail = [fname, line2, line3].filter(Boolean).join('\n');
+        const label  = 'Jellyfin' + (resS ? '\n' + resS : '');
+
+        // bingeGroup identifies the NATURE of the stream, not the item: Stremio
+        // auto-selects the next episode only when it offers a stream carrying the
+        // same group. Keying it on the per-episode item id can therefore never
+        // match across episodes, and "Play Now" on the next-episode prompt falls
+        // back to the current one. The resolution is deliberately part of the key
+        // so that a show with mixed-quality episodes keeps binging on one tier
+        // instead of silently switching; Direct Play and Transcode stay distinct
+        // so Stremio knows which of the two to carry forward.
+        const groupBase = 'jellyfin' + (resS ? '-' + resS : '');
+
         return {
             streams: [
                 {
-                    title: "Jellyfin\nDirect Play",
+                    name: label,
+                    description: 'Direct Play\n' + detail,
                     url: directPlayUrl,
-                    behaviorHints: { notWebReady: true }
+                    behaviorHints: { notWebReady: true, bingeGroup: groupBase + '-direct', videoSize: bytes || undefined, filename: fname }
                 },
                 {
-                    title: "Jellyfin\nTranscode (Web Safe)",
+                    name: label,
+                    description: 'Transcode (web safe)\n' + detail,
                     url: transcodeUrl,
-                    behaviorHints: { notWebReady: false }
+                    behaviorHints: { notWebReady: false, bingeGroup: groupBase + '-transcode', filename: fname }
                 }
             ]
         };
