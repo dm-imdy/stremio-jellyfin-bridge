@@ -154,11 +154,16 @@ export const streamHandler = async ({ type, id }) => {
         // auto-selects the next episode only when it offers a stream carrying the
         // same group. Keying it on the per-episode item id can therefore never
         // match across episodes, and "Play Now" on the next-episode prompt falls
-        // back to the current one. The resolution is deliberately part of the key
-        // so that a show with mixed-quality episodes keeps binging on one tier
-        // instead of silently switching; Direct Play and Transcode stay distinct
-        // so Stremio knows which of the two to carry forward.
-        const groupBase = 'jellyfin' + (resS ? '-' + resS : '');
+        // back to the current one.
+        //
+        // Resolution is deliberately NOT part of the key. Jellyfin gives us one
+        // source per episode, so there is no quality tier to hold on to -- but a
+        // library with mixed-resolution episodes (a 720p rip next to a 1080p one
+        // in the same season) would produce a different group per episode and
+        // break binging outright. Revisit if several sources per title are ever
+        // offered. Direct Play and Transcode stay distinct so Stremio knows which
+        // of the two to carry forward.
+        const groupBase = 'jellyfin';
 
         return {
             streams: [
