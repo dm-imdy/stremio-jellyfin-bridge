@@ -202,8 +202,35 @@ export function proxyImageUrl(viewer, itemId, imageType) {
     return `${process.env.HTTPS_BASE_URL}/proxy-image?${params.toString()}`;
 }
 
-/** A Jellyfin URL the PLAYER will fetch: public host, viewer's own token. */
+/**
+ * Is playback proxied through this addon rather than fetched straight from
+ * Jellyfin? On by default in multi-user mode, because Jellyfin's media endpoints
+ * are anonymous: without the proxy, "authenticated" would stop at the catalog and
+ * the bytes would be open to anyone holding a URL. Off by default in single-user
+ * mode, which keeps a private LAN install behaving exactly as it always has.
+ */
+export function isMediaProxied() {
+    const explicit = String(process.env.PROXY_MEDIA ?? '').trim().toLowerCase();
+    if (explicit === 'true' || explicit === '1') return true;
+    if (explicit === 'false' || explicit === '0') return false;
+    return getRunMode() === 'multi-user';
+}
+
+/**
+ * A media URL for the PLAYER.
+ *
+ * Proxied: it points back at this addon, carries the viewer's configuration, and
+ * NO Jellyfin token — nothing in the URL is a Jellyfin credential, and it is
+ * useless to anyone Jellyfin will not authenticate.
+ * Direct: the legacy shape, straight at Jellyfin's public host with a token.
+ */
 export function playbackUrl(viewer, path, params = {}) {
+    if (isMediaProxied()) {
+        const prefix = viewer.sealed ? `/${encodeURIComponent(JSON.stringify({ jf: viewer.sealed }))}` : '';
+        const qs = new URLSearchParams(params).toString();
+        return `${process.env.HTTPS_BASE_URL}${prefix}/jf${path}${qs ? `?${qs}` : ''}`;
+    }
+
     const qs = new URLSearchParams({ ...params, api_key: viewer.currentToken() });
     return `${viewer.publicBase}${path}?${qs.toString()}`;
 }

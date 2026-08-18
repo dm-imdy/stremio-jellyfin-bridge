@@ -5,8 +5,10 @@ import { serveHTTPS, getHttpsBaseUrl } from "./https.js";
 import stremio from 'stremio-addon-sdk';
 const { addonBuilder, serveHTTP, getRouter } = stremio;
 import express from 'express';
+import { isMediaProxied } from './viewer.js';
 import { manifest } from './manifest.js';
 import { proxyImageHandler } from './handlers/proxy.js';
+import { mediaProxyHandler } from './handlers/media.js';
 import { configurePage, configureSubmit } from './handlers/configure.js';
 import { localSubtitleRoute, localSubtitleWriteRoute } from './handlers/localSubsRoute.js';
 import { anySourceEnabled } from './subtitleSources/index.js';
@@ -73,7 +75,7 @@ if (multiUser) {
         console.warn(`JELLYFIN_API_KEY is set but IGNORED in multi-user mode — remove it. ` +
             `A Jellyfin API key is always server-wide admin and must never reach a client.`);
     }
-    if (!process.env.JELLYFIN_PUBLIC_URL && !/^https:/i.test(getJellyfinApiBase())) {
+    if (!isMediaProxied() && !process.env.JELLYFIN_PUBLIC_URL && !/^https:/i.test(getJellyfinApiBase())) {
         console.warn(`JELLYFIN_PUBLIC_URL is not set, so playback URLs will point at ${getJellyfinApiBase()}. ` +
             `Remote viewers can only play if that address is reachable from the internet.`);
     }
@@ -185,6 +187,18 @@ async function main() {
         app.get('/proxy-image', proxyImageHandler);
 
         // ==========================================
+        // AUTHENTICATED PLAYBACK
+        // ==========================================
+        // Jellyfin's media endpoints are anonymous, so the bytes are served here
+        // instead — behind the same Jellyfin authentication as everything else.
+        // The path mirrors Jellyfin's own so HLS playlists resolve their relative
+        // segment references straight back through the proxy.
+        app.get('/:config/jf/*', mediaProxyHandler);
+        app.head('/:config/jf/*', mediaProxyHandler);
+        app.get('/jf/*', mediaProxyHandler);
+        app.head('/jf/*', mediaProxyHandler);
+
+        // ==========================================
         // STANDALONE LOCAL SUBTITLES (Phase 1)
         // Serves files from LOCAL_SUBS_DIR over the same HTTPS endpoint.
         // ==========================================
@@ -200,7 +214,7 @@ async function main() {
         // Secret values are masked so shared logs don't leak them.
         const ENV_KEYS = [
             'TZ', 'PUID', 'PGID',
-            'JELLYFIN_URL', 'JELLYFIN_PUBLIC_URL', 'BRIDGE_SECRET',
+            'JELLYFIN_URL', 'JELLYFIN_PUBLIC_URL', 'BRIDGE_SECRET', 'PROXY_MEDIA',
             'JELLYFIN_API_KEY', 'JELLYFIN_USER_NAME',
             'SHOW_CATALOG',
             'DEFAULT_SUBS_LANG', 'JELLYFIN_DEFAULT_EXT_SUBS_LANG',
@@ -227,7 +241,12 @@ async function main() {
         // whenever the addon reaches Jellyfin over the LAN but viewers do not —
         // and it is the first thing to check when playback fails off-network.
         if (jellyfinEnabled) {
-            console.log(`Run mode: ${jf.mode} | Jellyfin API: ${getJellyfinApiBase()} | playback host: ${getJellyfinPublicBase()}`);
+            console.log(`Run mode: ${jf.mode} | Jellyfin API: ${getJellyfinApiBase()} | ` +
+                (isMediaProxied()
+                    // Jellyfin is never contacted by the client, so it needs no
+                    // public exposure at all — the addon is the only door.
+                    ? `playback: PROXIED through this addon (Jellyfin needs no public exposure)`
+                    : `playback host: ${getJellyfinPublicBase()} (fetched directly by the player)`));
         }
 
         // If the Local Subtitles feature is enabled, announce its base folder.
