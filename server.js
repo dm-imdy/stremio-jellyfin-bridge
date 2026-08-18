@@ -10,6 +10,7 @@ import { manifest } from './manifest.js';
 import { proxyImageHandler } from './handlers/proxy.js';
 import { mediaProxyHandler } from './handlers/media.js';
 import { configurePage, configureSubmit } from './handlers/configure.js';
+import { guardLogin } from './login-guard.js';
 import { localSubtitleRoute, localSubtitleWriteRoute } from './handlers/localSubsRoute.js';
 import { anySourceEnabled } from './subtitleSources/index.js';
 import axios from 'axios';
@@ -113,15 +114,22 @@ builder.defineSubtitlesHandler(subtitlesHandler);
 // still go through serveHTTP unchanged.
 async function serveAddon(addonInterface, port) {
     const app = express();
-    app.use(express.json());
+    app.use(express.json({ limit: '16kb' }));
+
+    // Behind a reverse proxy the socket address is the proxy's, so every viewer
+    // would share one rate-limit bucket. Trust X-Forwarded-For ONLY from the
+    // proxies named here — trusting it from anyone would let a client claim any
+    // address it likes and walk straight past the per-IP limit.
+    const trusted = String(process.env.TRUSTED_PROXY_IPS || '').trim();
+    if (trusted) app.set('trust proxy', trusted.split(',').map((s) => s.trim()).filter(Boolean));
 
     app.get('/', (_, res) => res.redirect('/configure'));
     // Both shapes: a fresh install, and the "Configure" button of an installed
     // addon, which lands on /{existing config}/configure.
     app.get('/configure', configurePage);
     app.get('/:config/configure', configurePage);
-    app.post('/configure', configureSubmit);
-    app.post('/:config/configure', configureSubmit);
+    app.post('/configure', guardLogin, configureSubmit);
+    app.post('/:config/configure', guardLogin, configureSubmit);
 
     app.use(getRouter(addonInterface));
 

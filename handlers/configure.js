@@ -1,6 +1,7 @@
 import { isMultiUser, getJellyfinApiBase } from '../global-constants.js';
 import { authenticateByName } from '../jellyfin-auth.js';
 import { sealLogin, installPath } from '../viewer.js';
+import { recordLoginFailure, clearLoginFailures } from '../login-guard.js';
 import { thisAddon } from '../common-utils.js';
 
 // ==========================================
@@ -103,11 +104,16 @@ export async function configureSubmit(req, res) {
     } catch (error) {
         const status = error?.response?.status;
         if (status === 401 || status === 403) {
+            // Counted, not just refused: this is the endpoint a guesser hammers.
+            recordLoginFailure(req, userName);
             return res.status(401).json({ error: 'Jellyfin rejected that username or password' });
         }
         console.error(`[Configure] Jellyfin authentication failed for "${userName}": ${error.message}`);
         return res.status(502).json({ error: 'Could not reach Jellyfin — try again shortly' });
     }
+
+    // Cleared on success so an honest typo does not leave a viewer locked out.
+    clearLoginFailures(req, userName);
 
     const base = process.env.HTTPS_BASE_URL || '';
     const path = installPath(sealLogin({ userName, password }));
