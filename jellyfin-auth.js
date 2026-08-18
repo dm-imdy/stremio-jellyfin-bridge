@@ -23,8 +23,20 @@ import { thisAddon } from './common-utils.js';
 // so they are treated as a cache over the credentials, never as the credentials:
 // a 401 drops the cached session and re-authenticates once from the stored login.
 
-const SESSIONS = new Map();          // userName(lower) -> { token, userId, userName, isAdmin }
-const INFLIGHT = new Map();          // userName(lower) -> Promise, so N parallel requests log in once
+const SESSIONS = new Map();          // credential key -> { token, userId, userName, isAdmin, checkedAt }
+const INFLIGHT = new Map();          // credential key -> Promise, so N parallel requests log in once
+
+// Keyed by the CREDENTIALS, never by the username alone. Keying on the name means
+// a request presenting that name and any password at all reuses whatever session
+// is cached -- measured as a straight authentication bypass: a configuration of
+// {"username":"asi","password":"wrong"} returned asi's real catalogue.
+function sessionKey(userName, password) {
+    // JSON so the two fields cannot run together: a separator that either field
+    // may itself contain would let one pair collide with another.
+    return crypto.createHash('sha256')
+        .update(JSON.stringify([String(userName).toLowerCase(), String(password)]))
+        .digest('hex');
+}
 
 // Jellyfin keys a session by DeviceId: authenticating a DIFFERENT user with the
 // SAME DeviceId replaces the existing session and invalidates its token. One
@@ -90,7 +102,7 @@ function recheckAfterMs() {
  * — which is what makes revoking access in Jellyfin actually stop playback.
  */
 export async function getSession(baseUrl, userName, password) {
-    const key = userName.toLowerCase();
+    const key = sessionKey(userName, password);
 
     const cached = SESSIONS.get(key);
     if (cached) {
@@ -125,8 +137,8 @@ export async function getSession(baseUrl, userName, password) {
     return pending;
 }
 
-export function dropSession(userName) {
-    SESSIONS.delete(userName.toLowerCase());
+export function dropSession(userName, password) {
+    SESSIONS.delete(sessionKey(userName, password));
 }
 
 /**
@@ -134,8 +146,8 @@ export function dropSession(userName) {
  * Used when stamping a token into a URL: a call earlier in the same request may
  * have re-authenticated, which makes any session object captured before it stale.
  */
-export function peekSession(userName) {
-    return SESSIONS.get(userName.toLowerCase()) || null;
+export function peekSession(userName, password) {
+    return SESSIONS.get(sessionKey(userName, password)) || null;
 }
 
 /** Is this the Jellyfin "you are not authorised" answer? */
@@ -169,7 +181,7 @@ export async function jellyfinRequest(viewer, config) {
         if (!isAuthFailure(error) || !viewer.canReauthenticate) throw error;
 
         console.warn(`[Auth] Jellyfin rejected the cached token for "${session.userName}" — re-authenticating.`);
-        dropSession(session.userName);
+        viewer.dropSession?.();
         session = await viewer.session();
         return send(session);
     }

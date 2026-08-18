@@ -1,3 +1,4 @@
+import path from 'path';
 import { resolveViewer } from '../viewer.js';
 import { jellyfinRequest } from '../jellyfin-auth.js';
 
@@ -34,10 +35,14 @@ const PASS_THROUGH = [
 ];
 
 export async function mediaProxyHandler(req, res) {
-    const upstreamPath = req.params[0] || '';
+    // Express hands us the path already percent-decoded, so `..%2f..%2fUsers`
+    // arrives as `Videos/../../Users` -- which passes a naive "starts with
+    // Videos/" test and then collapses to /Users at the upstream. Resolve the
+    // path FIRST and match on what will actually be requested.
+    const upstreamPath = path.posix.normalize('/' + (req.params[0] || '')).replace(/^\/+/, '');
 
-    if (!ALLOWED.some((rx) => rx.test(upstreamPath))) {
-        console.warn(`[Media] Refused a non-media path: ${upstreamPath}`);
+    if (upstreamPath.includes('..') || !ALLOWED.some((rx) => rx.test(upstreamPath))) {
+        console.warn(`[Media] Refused a non-media path: ${req.params[0]} (resolves to ${upstreamPath})`);
         return res.status(403).send('Refused');
     }
 

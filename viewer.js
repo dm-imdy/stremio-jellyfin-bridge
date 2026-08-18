@@ -205,8 +205,9 @@ export async function resolveViewer(config) {
         // The token stamped into client URLs must be the CURRENT one: if a call
         // earlier in this same request had to re-authenticate, the session
         // captured above is already stale and would 401 in the player.
-        currentToken: () => peekSession(login.userName)?.token || session.token,
+        currentToken: () => peekSession(login.userName, login.password)?.token || session.token,
         session: async () => getSession(apiBase, login.userName, login.password),
+        dropSession: () => dropSession(login.userName, login.password),
     };
 }
 
