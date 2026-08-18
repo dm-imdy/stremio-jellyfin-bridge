@@ -114,6 +114,7 @@ builder.defineSubtitlesHandler(subtitlesHandler);
 // still go through serveHTTP unchanged.
 async function serveAddon(addonInterface, port) {
     const app = express();
+    app.disable('x-powered-by');   // no need to advertise the stack to the internet
     app.use(express.json({ limit: '16kb' }));
 
     // Behind a reverse proxy the socket address is the proxy's, so every viewer

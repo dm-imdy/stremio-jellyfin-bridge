@@ -79,10 +79,15 @@ export function configurePage(req, res) {
                 const d = await r.json();
                 if (!r.ok) { m.className = 'msg err'; m.textContent = d.error || 'Sign-in failed.'; return; }
                 m.className = 'msg ok';
-                m.innerHTML = 'Signed in as <b>' + d.userName + '</b>' +
-                    (d.warning ? '<br><b>' + d.warning + '</b>' : '') +
-                    '<span class="url">' + d.installUrl + '</span>' +
-                    '<a class="install" href="' + d.stremioUrl + '">Install in Stremio</a>';
+                // Built as DOM nodes, not concatenated HTML: the username comes
+                // from Jellyfin, and a display name is not something this page
+                // should be able to be talked into executing.
+                m.textContent = 'Signed in as ' + d.userName;
+                if (d.warning) { const w = document.createElement('div'); w.textContent = d.warning; m.appendChild(w); }
+                const u = document.createElement('span'); u.className = 'url'; u.textContent = d.installUrl;
+                const a = document.createElement('a'); a.className = 'install'; a.textContent = 'Install in Stremio';
+                a.href = d.stremioUrl;
+                m.appendChild(u); m.appendChild(a);
             } catch (err) {
                 m.className = 'msg err'; m.textContent = 'Could not reach the addon: ' + err.message;
             } finally { b.disabled = false; }
