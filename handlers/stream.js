@@ -1,15 +1,17 @@
-import axios from 'axios';
 import { isJellyfinConfigured } from '../global-constants.js';
+import { resolveViewer, playbackUrl } from '../viewer.js';
+import { jellyfinRequest } from '../jellyfin-auth.js';
 
-export const streamHandler = async ({ type, id }) => {
+export const streamHandler = async ({ type, id, config }) => {
     console.log(`[Stream] Request for ${type} | id: ${id}`);
 
     // Subtitles-only mode: no Jellyfin streams to serve.
     if (!isJellyfinConfigured()) return { streams: [] };
 
-    const JELLYFIN_URL = process.env.JELLYFIN_URL;
-    const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY;
-    const JELLYFIN_USER_ID = process.env.JELLYFIN_USER_ID;
+    // Who is asking. Jellyfin decides — an unauthenticated caller gets no streams,
+    // and an authenticated one only ever sees what their own account can see.
+    const viewer = await resolveViewer(config);
+    if (!viewer) return { streams: [] };
 
     let jellyfinItemId = null;
 
@@ -27,9 +29,10 @@ export const streamHandler = async ({ type, id }) => {
             const episode = parts[2];
 
             // Search Jellyfin for the root item
-            const searchRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items`, {
-                headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
-                params: { 
+            const searchRes = await jellyfinRequest(viewer, {
+                method: 'get',
+                path: `/Users/${viewer.userId}/Items`,
+                params: {
                     Recursive: true, 
                     AnyProviderIdEquals: imdbId,
                     IncludeItemTypes: type === 'movie' ? 'Movie' : 'Series',
@@ -58,10 +61,11 @@ export const streamHandler = async ({ type, id }) => {
                     // and relied on the client-side match below), and matched
                     // nothing at all where episodes aren't Episode-type children
                     // of the series -- e.g. loose files in a mixed library.
-                    const epRes = await axios.get(`${JELLYFIN_URL}/Shows/${matchedItem.Id}/Episodes`, {
-                        headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
+                    const epRes = await jellyfinRequest(viewer, {
+                        method: 'get',
+                        path: `/Shows/${matchedItem.Id}/Episodes`,
                         params: {
-                            userId: JELLYFIN_USER_ID,
+                            userId: viewer.userId,
                             season: targetSeason,
                             Fields: 'ParentIndexNumber,IndexNumber'
                         }
@@ -92,8 +96,9 @@ export const streamHandler = async ({ type, id }) => {
         // ==========================================
         // FETCH MEDIA SOURCES FOR EXACT ID
         // ==========================================
-        const itemRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items/${jellyfinItemId}`, {
-            headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
+        const itemRes = await jellyfinRequest(viewer, {
+            method: 'get',
+            path: `/Users/${viewer.userId}/Items/${jellyfinItemId}`,
             params: { Fields: 'MediaSources' }
         });
 
@@ -112,8 +117,18 @@ export const streamHandler = async ({ type, id }) => {
         // ==========================================
         // RETURN THE STREAM URLS TO STREMIO
         // ==========================================
-        const directPlayUrl = `${JELLYFIN_URL}/Videos/${jellyfinItemId}/stream?static=true&mediaSourceId=${mediaSourceId}&api_key=${JELLYFIN_API_KEY}`;
-        const transcodeUrl = `${JELLYFIN_URL}/Videos/${jellyfinItemId}/master.m3u8?mediaSourceId=${mediaSourceId}&api_key=${JELLYFIN_API_KEY}&VideoCodec=h264&AudioCodec=aac`;
+        // Fetched by the PLAYER, so they carry the public Jellyfin host and the
+        // viewer's own access token — never the server-wide admin key, and never
+        // a LAN address that only resolves at home.
+        const directPlayUrl = playbackUrl(viewer, `/Videos/${jellyfinItemId}/stream`, {
+            static: 'true',
+            mediaSourceId,
+        });
+        const transcodeUrl = playbackUrl(viewer, `/Videos/${jellyfinItemId}/master.m3u8`, {
+            mediaSourceId,
+            VideoCodec: 'h264',
+            AudioCodec: 'aac',
+        });
 
         // Surface the real file details in Stremio.
         //

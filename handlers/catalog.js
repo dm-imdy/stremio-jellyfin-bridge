@@ -1,7 +1,8 @@
-import axios from 'axios';
 import { isJellyfinConfigured } from '../global-constants.js';
+import { resolveViewer, proxyImageUrl } from '../viewer.js';
+import { jellyfinRequest } from '../jellyfin-auth.js';
 
-export const catalogHandler = async ({ type, id, extra }) => {
+export const catalogHandler = async ({ type, id, extra, config }) => {
     console.log(`[Catalog] Request for ${type} | id: ${id} | search: ${extra.search || 'none'}`);
 
     // Subtitles-only mode: no Jellyfin, so there's no catalog to serve.
@@ -15,15 +16,14 @@ export const catalogHandler = async ({ type, id, extra }) => {
         return { metas: [] }; // Returning empty tells Stremio to hide the UI row completely
     }
 
-    const JELLYFIN_URL = process.env.JELLYFIN_URL;
-    const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY;
-    const JELLYFIN_USER_ID = process.env.JELLYFIN_USER_ID;
-    const proxyBase = `${process.env.HTTPS_BASE_URL}/proxy-image?url=`;
-
     // Route guard
     if (id !== 'jellyfin_movies' && id !== 'jellyfin_series') {
         return { metas: [] };
     }
+
+    // Who is asking. Jellyfin decides — an unauthenticated caller gets no catalog.
+    const viewer = await resolveViewer(config);
+    if (!viewer) return { metas: [] };
 
     const jfType = type === 'movie' ? 'Movie' : 'Series';
 
@@ -42,20 +42,18 @@ export const catalogHandler = async ({ type, id, extra }) => {
             params.searchTerm = extra.search;
         }
 
-        const response = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items`, {
-            headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
+        const response = await jellyfinRequest(viewer, {
+            method: 'get',
+            path: `/Users/${viewer.userId}/Items`,
             params: params
         });
 
         // Map the Jellyfin data array into Stremio 'Meta' objects
         const metas = response.data.Items.map(item => {
             //console.log(`***[DEBUG] item: ${JSON.stringify(item, null, 2)}`);
-            const rawPosterUrl = `${JELLYFIN_URL}/Items/${item.Id}/Images/Primary?api_key=${JELLYFIN_API_KEY}`;
-            const posterUrl = `${proxyBase}${encodeURIComponent(rawPosterUrl)}`;
+            const posterUrl = proxyImageUrl(viewer, item.Id, 'Primary');
+            const logoUrl = proxyImageUrl(viewer, item.Id, 'Logo');
 
-            const rawLogoUrl = `${JELLYFIN_URL}/Items/${item.Id}/Images/Logo?api_key=${JELLYFIN_API_KEY}`;
-            const logoUrl = `${proxyBase}${encodeURIComponent(rawLogoUrl)}`;
-            
             return {
                 id: `jf:${item.Id}`, 
                 type: type,
