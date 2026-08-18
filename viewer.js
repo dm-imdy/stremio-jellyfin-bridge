@@ -82,12 +82,33 @@ export function installPath(sealed, resource = 'manifest.json') {
     return `/${encodeURIComponent(JSON.stringify({ jf: sealed }))}/${resource}`;
 }
 
-/** Pull the sealed blob out of whatever the SDK handed us as `config`. */
-export function sealedFromConfig(config) {
+/**
+ * Normalise the configuration, whichever route it arrived on.
+ *
+ * The SDK router JSON-parses the path segment before calling a handler, but the
+ * addon's own routes (playback, artwork) see it raw — as the JSON TEXT, or as the
+ * bare sealed blob when it came from a query parameter. All three mean the same
+ * thing and must resolve to the same viewer.
+ */
+function asConfigObject(config) {
     if (!config) return null;
-    if (typeof config === 'string') return config;          // raw path segment
-    if (typeof config === 'object' && typeof config.jf === 'string') return config.jf;
-    return null;
+    if (typeof config === 'object') return config;
+    if (typeof config !== 'string') return null;
+
+    const text = config.trim();
+    if (!text.startsWith('{')) return { jf: text };
+    try {
+        const parsed = JSON.parse(text);
+        return typeof parsed === 'object' && parsed ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+/** Pull the sealed blob out of whatever we were handed as `config`. */
+export function sealedFromConfig(config) {
+    const obj = asConfigObject(config);
+    return obj && typeof obj.jf === 'string' ? obj.jf : null;
 }
 
 /**
@@ -112,10 +133,11 @@ export function readLogin(config) {
         return null;
     }
 
-    if (config && typeof config === 'object' && config.username) {
-        console.warn(`[Viewer] "${config.username}" is installed with an UNSEALED login — ` +
+    const obj = asConfigObject(config);
+    if (obj && obj.username) {
+        console.warn(`[Viewer] "${obj.username}" is installed with an UNSEALED login — ` +
             `their Jellyfin password is in clear text in their install URL. Re-issue it from /configure.`);
-        return { userName: String(config.username), password: String(config.password ?? '') };
+        return { userName: String(obj.username), password: String(obj.password ?? '') };
     }
 
     return null;
