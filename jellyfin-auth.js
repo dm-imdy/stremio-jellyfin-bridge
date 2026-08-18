@@ -71,17 +71,51 @@ export async function authenticateByName(baseUrl, userName, password) {
     };
 }
 
-/** Cached login. Concurrent callers for the same user share one authentication. */
+/** How long a cached session is trusted before Jellyfin is asked about it again. */
+function recheckAfterMs() {
+    const seconds = Number(process.env.AUTH_RECHECK_SECONDS);
+    return (Number.isFinite(seconds) && seconds >= 0 ? seconds : 60) * 1000;
+}
+
+/**
+ * Cached login. Concurrent callers for the same user share one authentication.
+ *
+ * The cache is REVALIDATED, not just held. Nothing else forces it to expire:
+ * Jellyfin's media endpoints are anonymous, so a proxied stream never comes back
+ * 401 no matter what happened to the account — measured, by disabling a user
+ * mid-test and watching the bytes keep flowing. So every AUTH_RECHECK_SECONDS the
+ * token is put to an endpoint that DOES enforce authorisation (/Users/Me). A
+ * disabled account, a deleted account or an invalidated token fails there, the
+ * session is dropped, and re-authentication from the stored credentials fails too
+ * — which is what makes revoking access in Jellyfin actually stop playback.
+ */
 export async function getSession(baseUrl, userName, password) {
     const key = userName.toLowerCase();
 
     const cached = SESSIONS.get(key);
-    if (cached) return cached;
+    if (cached) {
+        if (Date.now() - cached.checkedAt < recheckAfterMs()) return cached;
+        try {
+            await axios.get(`${baseUrl}/Users/Me`, {
+                headers: { Authorization: authHeader(cached.userName, cached.token) },
+                timeout: 10000,
+            });
+            cached.checkedAt = Date.now();
+            return cached;
+        } catch (error) {
+            // Refused, or Jellyfin unreachable. Either way stop trusting the
+            // cached token: fall through and prove the credentials again.
+            console.warn(`[Auth] Re-check failed for "${cached.userName}" ` +
+                `(${error.response?.status || error.message}) — re-authenticating.`);
+            SESSIONS.delete(key);
+        }
+    }
 
     if (INFLIGHT.has(key)) return INFLIGHT.get(key);
 
     const pending = authenticateByName(baseUrl, userName, password)
         .then((session) => {
+            session.checkedAt = Date.now();
             SESSIONS.set(key, session);
             return session;
         })
