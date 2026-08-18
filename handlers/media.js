@@ -28,6 +28,17 @@ import { jellyfinRequest } from '../jellyfin-auth.js';
 // some other endpoint turns out to be more powerful than it looks.
 const ALLOWED = [/^Videos\//i, /^Audio\//i, /^videos\//i];
 
+/**
+ * The path this proxy will actually request upstream, or null if it refuses.
+ * Exported so the refusal can be tested directly -- it is the whole access
+ * decision for the media routes.
+ */
+export function resolveMediaPath(raw) {
+    const resolved = path.posix.normalize('/' + (raw || '')).replace(/^\/+/, '');
+    if (resolved.includes('..') || !ALLOWED.some((rx) => rx.test(resolved))) return null;
+    return resolved;
+}
+
 // Response headers a player needs for seeking. Everything else is dropped.
 const PASS_THROUGH = [
     'content-type', 'content-length', 'content-range', 'accept-ranges',
@@ -39,10 +50,10 @@ export async function mediaProxyHandler(req, res) {
     // arrives as `Videos/../../Users` -- which passes a naive "starts with
     // Videos/" test and then collapses to /Users at the upstream. Resolve the
     // path FIRST and match on what will actually be requested.
-    const upstreamPath = path.posix.normalize('/' + (req.params[0] || '')).replace(/^\/+/, '');
+    const upstreamPath = resolveMediaPath(req.params[0]);
 
-    if (upstreamPath.includes('..') || !ALLOWED.some((rx) => rx.test(upstreamPath))) {
-        console.warn(`[Media] Refused a non-media path: ${req.params[0]} (resolves to ${upstreamPath})`);
+    if (!upstreamPath) {
+        console.warn(`[Media] Refused a non-media path: ${req.params[0]}`);
         return res.status(403).send('Refused');
     }
 

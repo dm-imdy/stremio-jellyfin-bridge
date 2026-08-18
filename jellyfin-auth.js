@@ -30,7 +30,7 @@ const INFLIGHT = new Map();          // credential key -> Promise, so N parallel
 // a request presenting that name and any password at all reuses whatever session
 // is cached -- measured as a straight authentication bypass: a configuration of
 // {"username":"asi","password":"wrong"} returned asi's real catalogue.
-function sessionKey(userName, password) {
+export function sessionKey(userName, password) {
     // JSON so the two fields cannot run together: a separator that either field
     // may itself contain would let one pair collide with another.
     return crypto.createHash('sha256')
