@@ -73,7 +73,12 @@ test('session cache: fields cannot run together into a colliding key', () => {
 // ---------------------------------------------------------------------------
 test('sealed login: round-trips', () => {
     const sealed = sealLogin({ userName: 'viewer', password: 'p@ss word' });
-    assert.deepEqual(openLogin(sealed), { userName: 'viewer', password: 'p@ss word' });
+    const opened = openLogin(sealed);
+    // The credentials are what this test is about. The blob now also carries the
+    // viewer's transcode preferences, covered in transcode.test.js -- asserting
+    // the whole object here would fail on every field ever added to it.
+    assert.equal(opened.userName, 'viewer');
+    assert.equal(opened.password, 'p@ss word');
 });
 
 test('sealed login: a tampered or forged blob opens as nothing', () => {

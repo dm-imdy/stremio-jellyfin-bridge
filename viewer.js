@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { getSession, dropSession, peekSession } from './jellyfin-auth.js';
 import { getRunMode, getJellyfinApiBase, getJellyfinPublicBase } from './global-constants.js';
+import { normalisePrefs, packPrefs } from './transcode.js';
 
 // ==========================================
 // WHO IS ASKING
@@ -36,15 +37,26 @@ function sealingKey() {
     return cachedKey;
 }
 
-/** Seal a Jellyfin login into the opaque string that lives in the install URL. */
-export function sealLogin({ userName, password }) {
+/**
+ * Seal a Jellyfin login into the opaque string that lives in the install URL.
+ *
+ * The viewer's transcode preferences ride along inside the same blob rather than
+ * sitting beside it in the URL, so there is exactly ONE opaque token to hand out
+ * and nothing in it invites hand-editing. `q` is omitted entirely when the
+ * preferences are the defaults, which keeps links minted before this feature
+ * existed byte-identical to what they are today.
+ */
+export function sealLogin({ userName, password, prefs }) {
     const key = sealingKey();
     if (!key) throw new Error('BRIDGE_SECRET is not set — cannot seal a viewer login');
+
+    const payload = { u: userName, p: password };
+    if (prefs) payload.q = packPrefs(prefs);
 
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
     const body = Buffer.concat([
-        cipher.update(JSON.stringify({ u: userName, p: password }), 'utf8'),
+        cipher.update(JSON.stringify(payload), 'utf8'),
         cipher.final(),
     ]);
 
@@ -70,7 +82,11 @@ export function openLogin(sealed) {
         );
 
         if (!json.u || !json.p) return null;
-        return { userName: json.u, password: json.p };
+        // A blob sealed before transcode tiers existed simply has no `q`, and
+        // normalisePrefs turns that into the defaults. Old install URLs keep
+        // working untouched -- re-minting them would have been a silent break
+        // for every link already handed out.
+        return { userName: json.u, password: json.p, prefs: normalisePrefs(json.q) };
     } catch {
         // A wrong BRIDGE_SECRET, a truncated URL and a forged blob all land here.
         return null;
@@ -137,7 +153,9 @@ export function readLogin(config) {
     if (obj && obj.username) {
         console.warn(`[Viewer] "${obj.username}" is installed with an UNSEALED login — ` +
             `their Jellyfin password is in clear text in their install URL. Re-issue it from /configure.`);
-        return { userName: String(obj.username), password: String(obj.password ?? '') };
+        // Stremio's generic config form cannot express a tier list, so a login
+        // typed in there gets the defaults rather than nothing.
+        return { userName: String(obj.username), password: String(obj.password ?? ''), prefs: normalisePrefs(null) };
     }
 
     return null;
@@ -169,6 +187,9 @@ export async function resolveViewer(config) {
             publicBase,
             userId,
             userName,
+            // Single-user mode has no per-viewer configuration to read them from,
+            // so it gets the same defaults every new multi-user viewer starts on.
+            prefs: normalisePrefs(null),
             sealed: null,
             canReauthenticate: false,
             currentToken: () => token,
@@ -197,6 +218,9 @@ export async function resolveViewer(config) {
         publicBase,
         userId: session.userId,
         userName: session.userName,
+        // What quality this viewer is offered. Carried on the viewer so every
+        // handler reads the same decision rather than re-deriving it.
+        prefs: login.prefs,
         // Always the sealed form, even when the request arrived with plaintext
         // fields: artwork URLs are handed to the client, and re-emitting a
         // password into them would spread it further with every poster.

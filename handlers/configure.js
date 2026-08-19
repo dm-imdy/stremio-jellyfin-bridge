@@ -3,6 +3,28 @@ import { authenticateByName } from '../jellyfin-auth.js';
 import { sealLogin, installPath } from '../viewer.js';
 import { recordLoginFailure, clearLoginFailures } from '../login-guard.js';
 import { thisAddon } from '../common-utils.js';
+import { TIERS, VIDEO_CODECS, AUDIO_CODECS, DEFAULT_PREFS } from '../transcode.js';
+
+// The form is generated from the same tables the stream handler reads, so a tier
+// or codec cannot exist in one and be missing from the other.
+const TIER_ROWS = Object.values(TIERS)
+    .sort((a, b) => b.height - a.height)
+    .map((t) => `
+                <div class="tier">
+                    <label><input type="checkbox" name="tier" value="${t.key}"${
+                        DEFAULT_PREFS.tiers.includes(t.key) ? ' checked' : ''
+                    }> ${t.label}</label>
+                    <input class="br" name="br-${t.key}" inputmode="decimal" placeholder="auto">
+                    <span class="u">Mbps</span>
+                </div>`)
+    .join('');
+
+const options = (table, selected) => Object.values(table)
+    .map((c) => `<option value="${c.key}"${c.key === selected ? ' selected' : ''}>${c.label}</option>`)
+    .join('');
+
+const VIDEO_OPTIONS = options(VIDEO_CODECS, DEFAULT_PREFS.videoCodec);
+const AUDIO_OPTIONS = options(AUDIO_CODECS, DEFAULT_PREFS.audioCodec);
 
 // ==========================================
 // THE CONFIGURE PAGE (multi-user mode)
@@ -42,6 +64,21 @@ const page = (body) => `<!doctype html>
          border-radius:8px; font:.78rem/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; color:#c8ccd8; }
   a.install { display:block; text-align:center; margin-top:.8rem; padding:.7rem; border-radius:8px;
               background:#27503a; color:#9ff0c4; text-decoration:none; font-weight:600; }
+  fieldset { margin:1.4rem 0 0; padding:.9rem 1rem 1.1rem; border:1px solid #2b2e38; border-radius:10px; }
+  legend { padding:0 .4rem; font-size:.82rem; color:#c8ccd8; }
+  p.hint { margin:.1rem 0 .9rem; font-size:.76rem; line-height:1.45; color:#82859a; }
+  .tier { display:flex; align-items:center; gap:.55rem; margin:.35rem 0; }
+  .tier label { flex:1; margin:0; display:flex; align-items:center; gap:.5rem; color:#e8e8ea; font-size:.9rem; }
+  .tier input[type=checkbox] { width:auto; margin:0; accent-color:#5b7cfa; }
+  .tier input.br { width:5.4rem; flex:none; padding:.35rem .45rem; font-size:.82rem; text-align:right; }
+  .tier span.u { font-size:.74rem; color:#82859a; width:2.6rem; }
+  select { width:100%; box-sizing:border-box; padding:.6rem .7rem; border-radius:8px; border:1px solid #343846;
+           background:#14151a; color:inherit; font:inherit; }
+  .row { display:flex; gap:.7rem; }
+  .row > div { flex:1; }
+  .check { display:flex; align-items:center; gap:.5rem; margin-top:1rem; font-size:.86rem; color:#e8e8ea; }
+  .check input { width:auto; margin:0; accent-color:#5b7cfa; }
+  .warn { margin-top:.7rem; font-size:.76rem; line-height:1.45; color:#e8b57a; }
 </style></head><body><main>${body}</main></body></html>`;
 
 export function configurePage(req, res) {
@@ -62,19 +99,88 @@ export function configurePage(req, res) {
             <input id="u" name="username" required autocapitalize="none" autocomplete="username">
             <label for="p">Jellyfin password</label>
             <input id="p" name="password" type="password" autocomplete="current-password">
+
+            <fieldset>
+                <legend>Quality offered in Stremio</legend>
+                <p class="hint">Every ticked size becomes its own row next to Direct Play, so you choose
+                quality when you press play rather than here. Leave a bitrate blank and it is worked out
+                from the file itself, scaled by pixel count — half the pixels, half the bits. Sizes larger
+                than the file are skipped instead of being upscaled.</p>
+                ${TIER_ROWS}
+            </fieldset>
+
+            <fieldset>
+                <legend>Codecs</legend>
+                <div class="row">
+                    <div>
+                        <label for="vc">Video</label>
+                        <select id="vc" name="videoCodec">${VIDEO_OPTIONS}</select>
+                    </div>
+                    <div>
+                        <label for="ac">Audio</label>
+                        <select id="ac" name="audioCodec">${AUDIO_OPTIONS}</select>
+                    </div>
+                </div>
+                <label for="ch">Audio channels</label>
+                <select id="ch" name="audioChannels">
+                    <option value="2" selected>Stereo — safest away from home</option>
+                    <option value="6">5.1 — only if your player handles it</option>
+                </select>
+                <p class="warn" id="vcwarn" hidden>HEVC roughly halves the bitrate at the same quality, but
+                not every Stremio player can decode it. Pick H.264 if anything refuses to play.</p>
+                <div class="check">
+                    <input type="checkbox" id="sc" name="streamCopy" checked>
+                    <label for="sc" style="margin:0;color:inherit">Skip re-encoding when the file already fits</label>
+                </div>
+            </fieldset>
+
             <button type="submit">Sign in &amp; get my link</button>
         </form>
         <div id="m" class="msg"></div>
         <script>
         const f = document.getElementById('f'), m = document.getElementById('m'), b = f.querySelector('button');
+
+        // Only warn about HEVC while it is actually selected -- a warning that is
+        // always on stops being read.
+        const vc = document.getElementById('vc'), vcwarn = document.getElementById('vcwarn');
+        const syncWarn = () => { vcwarn.hidden = vc.value === 'h264'; };
+        vc.addEventListener('change', syncWarn); syncWarn();
+
+        // Bitrates are typed in Mbps because that is how anyone thinks about a
+        // connection, and sent in bits per second because that is what Jellyfin
+        // takes. A blank field means "work it out from the file".
+        function readPrefs() {
+            const tiers = [...f.querySelectorAll('input[name=tier]:checked')].map(c => c.value);
+            const bitrates = {};
+            for (const key of tiers) {
+                const raw = (f.elements['br-' + key]?.value || '').trim();
+                if (!raw) continue;
+                const mbps = Number(raw.replace(',', '.'));
+                if (Number.isFinite(mbps) && mbps > 0) bitrates[key] = Math.round(mbps * 1000000);
+            }
+            return {
+                tiers, bitrates,
+                videoCodec: vc.value,
+                audioCodec: document.getElementById('ac').value,
+                audioChannels: Number(document.getElementById('ch').value),
+                streamCopy: document.getElementById('sc').checked
+            };
+        }
+
         f.addEventListener('submit', async (e) => {
             e.preventDefault();
+            const prefs = readPrefs();
+            if (!prefs.tiers.length) {
+                m.className = 'msg err';
+                m.textContent = 'Tick at least one size, or Direct Play will be your only option.';
+                return;
+            }
             b.disabled = true; m.className = 'msg'; m.textContent = '';
             try {
                 const r = await fetch('configure', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: f.username.value, password: f.password.value })
+                    body: JSON.stringify({ username: f.username.value, password: f.password.value, prefs })
                 });
                 const d = await r.json();
                 if (!r.ok) { m.className = 'msg err'; m.textContent = d.error || 'Sign-in failed.'; return; }
@@ -120,11 +226,17 @@ export async function configureSubmit(req, res) {
     // Cleared on success so an honest typo does not leave a viewer locked out.
     clearLoginFailures(req, userName);
 
+    // Whatever arrives here is normalised inside the seal: this endpoint is public,
+    // so the preferences are treated as untrusted input rather than as a form this
+    // page necessarily produced.
+    const prefs = req.body?.prefs && typeof req.body.prefs === 'object' ? req.body.prefs : null;
+
     const base = process.env.HTTPS_BASE_URL || '';
-    const path = installPath(sealLogin({ userName, password }));
+    const path = installPath(sealLogin({ userName, password, prefs }));
     const installUrl = `${base}${path}`;
 
-    console.log(`[Configure] Minted an install link for Jellyfin user "${session.userName}".`);
+    console.log(`[Configure] Minted an install link for Jellyfin user "${session.userName}"` +
+        (prefs ? ` (tiers: ${(prefs.tiers || []).join(', ') || 'defaults'}, ${prefs.videoCodec || 'h264'}).` : '.'));
 
     res.json({
         userName: session.userName,

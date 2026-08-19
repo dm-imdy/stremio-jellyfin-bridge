@@ -1,6 +1,7 @@
 import { isJellyfinConfigured } from '../global-constants.js';
 import { resolveViewer, playbackUrl } from '../viewer.js';
 import { jellyfinRequest } from '../jellyfin-auth.js';
+import { readSource, applicableTiers, tierParams, tierDescription, isWebReady } from '../transcode.js';
 
 export const streamHandler = async ({ type, id, config }) => {
     console.log(`[Stream] Request for ${type} | id: ${id}`);
@@ -124,11 +125,15 @@ export const streamHandler = async ({ type, id, config }) => {
             static: 'true',
             mediaSourceId,
         });
-        const transcodeUrl = playbackUrl(viewer, `/Videos/${jellyfinItemId}/master.m3u8`, {
-            mediaSourceId,
-            VideoCodec: 'h264',
-            AudioCodec: 'aac',
-        });
+
+        // One transcode offer per configured tier, best first. This replaces a
+        // single hardcoded h264/aac URL that carried no size and no bitrate --
+        // against which Jellyfin defaults to the SOURCE bitrate, so the one thing
+        // the entry claimed to do (make a remote stream affordable) it did not do.
+        const prefs = viewer.prefs;
+        const srcInfo = readSource(source);
+        const tiers = applicableTiers(srcInfo, prefs);
+        const webReady = isWebReady(prefs);
 
         // Surface the real file details in Stremio.
         //
@@ -180,6 +185,24 @@ export const streamHandler = async ({ type, id, config }) => {
         // of the two to carry forward.
         const groupBase = 'jellyfin';
 
+        // The bingeGroup is per TIER, not one shared "-transcode" group. Stremio
+        // carries the group forward to auto-select the next episode, so a single
+        // group across several tiers would let the next episode come back at a
+        // different quality than the one just chosen.
+        // The tier's OWN resolution, not the source's: `label` already carries the
+        // source size for the Direct Play row, and appending to it produced rows
+        // reading "Jellyfin / 1080p / 720p" for a 720p offer off a 1080p file.
+        const tierStreams = tiers.map((tier) => ({
+            name: 'Jellyfin\n' + tier.label,
+            description: 'Transcode ' + tier.label + ' — ' + tierDescription(tier, srcInfo, prefs) + '\n' + detail,
+            url: playbackUrl(
+                viewer,
+                `/Videos/${jellyfinItemId}/master.m3u8`,
+                tierParams(tier, srcInfo, prefs, mediaSourceId)
+            ),
+            behaviorHints: { notWebReady: !webReady, bingeGroup: groupBase + '-transcode-' + tier.key, filename: fname }
+        }));
+
         return {
             streams: [
                 {
@@ -188,12 +211,7 @@ export const streamHandler = async ({ type, id, config }) => {
                     url: directPlayUrl,
                     behaviorHints: { notWebReady: true, bingeGroup: groupBase + '-direct', videoSize: bytes || undefined, filename: fname }
                 },
-                {
-                    name: label,
-                    description: 'Transcode (web safe)\n' + detail,
-                    url: transcodeUrl,
-                    behaviorHints: { notWebReady: false, bingeGroup: groupBase + '-transcode', filename: fname }
-                }
+                ...tierStreams
             ]
         };
 
