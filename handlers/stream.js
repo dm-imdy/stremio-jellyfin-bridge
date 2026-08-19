@@ -1,15 +1,18 @@
-import axios from 'axios';
 import { isJellyfinConfigured } from '../global-constants.js';
+import { resolveViewer, playbackUrl } from '../viewer.js';
+import { jellyfinRequest } from '../jellyfin-auth.js';
+import { readSource, applicableTiers, tierParams, tierDescription, isWebReady } from '../transcode.js';
 
-export const streamHandler = async ({ type, id }) => {
+export const streamHandler = async ({ type, id, config }) => {
     console.log(`[Stream] Request for ${type} | id: ${id}`);
 
     // Subtitles-only mode: no Jellyfin streams to serve.
     if (!isJellyfinConfigured()) return { streams: [] };
 
-    const JELLYFIN_URL = process.env.JELLYFIN_URL;
-    const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY;
-    const JELLYFIN_USER_ID = process.env.JELLYFIN_USER_ID;
+    // Who is asking. Jellyfin decides — an unauthenticated caller gets no streams,
+    // and an authenticated one only ever sees what their own account can see.
+    const viewer = await resolveViewer(config);
+    if (!viewer) return { streams: [] };
 
     let jellyfinItemId = null;
 
@@ -27,9 +30,10 @@ export const streamHandler = async ({ type, id }) => {
             const episode = parts[2];
 
             // Search Jellyfin for the root item
-            const searchRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items`, {
-                headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
-                params: { 
+            const searchRes = await jellyfinRequest(viewer, {
+                method: 'get',
+                path: `/Users/${viewer.userId}/Items`,
+                params: {
                     Recursive: true, 
                     AnyProviderIdEquals: imdbId,
                     IncludeItemTypes: type === 'movie' ? 'Movie' : 'Series',
@@ -58,10 +62,11 @@ export const streamHandler = async ({ type, id }) => {
                     // and relied on the client-side match below), and matched
                     // nothing at all where episodes aren't Episode-type children
                     // of the series -- e.g. loose files in a mixed library.
-                    const epRes = await axios.get(`${JELLYFIN_URL}/Shows/${matchedItem.Id}/Episodes`, {
-                        headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
+                    const epRes = await jellyfinRequest(viewer, {
+                        method: 'get',
+                        path: `/Shows/${matchedItem.Id}/Episodes`,
                         params: {
-                            userId: JELLYFIN_USER_ID,
+                            userId: viewer.userId,
                             season: targetSeason,
                             Fields: 'ParentIndexNumber,IndexNumber'
                         }
@@ -92,8 +97,9 @@ export const streamHandler = async ({ type, id }) => {
         // ==========================================
         // FETCH MEDIA SOURCES FOR EXACT ID
         // ==========================================
-        const itemRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items/${jellyfinItemId}`, {
-            headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
+        const itemRes = await jellyfinRequest(viewer, {
+            method: 'get',
+            path: `/Users/${viewer.userId}/Items/${jellyfinItemId}`,
             params: { Fields: 'MediaSources' }
         });
 
@@ -112,8 +118,22 @@ export const streamHandler = async ({ type, id }) => {
         // ==========================================
         // RETURN THE STREAM URLS TO STREMIO
         // ==========================================
-        const directPlayUrl = `${JELLYFIN_URL}/Videos/${jellyfinItemId}/stream?static=true&mediaSourceId=${mediaSourceId}&api_key=${JELLYFIN_API_KEY}`;
-        const transcodeUrl = `${JELLYFIN_URL}/Videos/${jellyfinItemId}/master.m3u8?mediaSourceId=${mediaSourceId}&api_key=${JELLYFIN_API_KEY}&VideoCodec=h264&AudioCodec=aac`;
+        // Fetched by the PLAYER, so they carry the public Jellyfin host and the
+        // viewer's own access token — never the server-wide admin key, and never
+        // a LAN address that only resolves at home.
+        const directPlayUrl = playbackUrl(viewer, `/Videos/${jellyfinItemId}/stream`, {
+            static: 'true',
+            mediaSourceId,
+        });
+
+        // One transcode offer per configured tier, best first. This replaces a
+        // single hardcoded h264/aac URL that carried no size and no bitrate --
+        // against which Jellyfin defaults to the SOURCE bitrate, so the one thing
+        // the entry claimed to do (make a remote stream affordable) it did not do.
+        const prefs = viewer.prefs;
+        const srcInfo = readSource(source);
+        const tiers = applicableTiers(srcInfo, prefs);
+        const webReady = isWebReady(prefs);
 
         // Surface the real file details in Stremio.
         //
@@ -165,6 +185,24 @@ export const streamHandler = async ({ type, id }) => {
         // of the two to carry forward.
         const groupBase = 'jellyfin';
 
+        // The bingeGroup is per TIER, not one shared "-transcode" group. Stremio
+        // carries the group forward to auto-select the next episode, so a single
+        // group across several tiers would let the next episode come back at a
+        // different quality than the one just chosen.
+        // The tier's OWN resolution, not the source's: `label` already carries the
+        // source size for the Direct Play row, and appending to it produced rows
+        // reading "Jellyfin / 1080p / 720p" for a 720p offer off a 1080p file.
+        const tierStreams = tiers.map((tier) => ({
+            name: 'Jellyfin\n' + tier.label,
+            description: 'Transcode ' + tier.label + ' — ' + tierDescription(tier, srcInfo, prefs) + '\n' + detail,
+            url: playbackUrl(
+                viewer,
+                `/Videos/${jellyfinItemId}/master.m3u8`,
+                tierParams(tier, srcInfo, prefs, mediaSourceId)
+            ),
+            behaviorHints: { notWebReady: !webReady, bingeGroup: groupBase + '-transcode-' + tier.key, filename: fname }
+        }));
+
         return {
             streams: [
                 {
@@ -173,12 +211,7 @@ export const streamHandler = async ({ type, id }) => {
                     url: directPlayUrl,
                     behaviorHints: { notWebReady: true, bingeGroup: groupBase + '-direct', videoSize: bytes || undefined, filename: fname }
                 },
-                {
-                    name: label,
-                    description: 'Transcode (web safe)\n' + detail,
-                    url: transcodeUrl,
-                    behaviorHints: { notWebReady: false, bingeGroup: groupBase + '-transcode', filename: fname }
-                }
+                ...tierStreams
             ]
         };
 

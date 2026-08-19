@@ -7,10 +7,12 @@
   "main": "startServer.js",
   "scripts": {
     "start": "node startServer.js",
-    "postinstall": "patch-package"
+    "postinstall": "patch-package",
+    "test": "node --test test/"
   },
   "dependencies": {
     "axios": "^1.15.0",
+    "express": "^4.21.2",
     "ip": "^2.0.1",
     "patch-package": "^8.0.1",
     "stremio-addon-sdk": "^1.6.10"

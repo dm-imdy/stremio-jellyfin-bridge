@@ -1,7 +1,8 @@
-import axios from 'axios';
 import { isJellyfinConfigured } from '../global-constants.js';
+import { resolveViewer, proxyImageUrl } from '../viewer.js';
+import { jellyfinRequest } from '../jellyfin-auth.js';
 
-export const metaHandler = async ({ type, id }) => {
+export const metaHandler = async ({ type, id, config }) => {
     console.log(`[Meta] Request for ${type} | id: ${id}`);
 
     // Subtitles-only mode: no Jellyfin metadata to resolve.
@@ -11,33 +12,28 @@ export const metaHandler = async ({ type, id }) => {
         return { meta: {} };
     }
 
-    const JELLYFIN_URL = process.env.JELLYFIN_URL;
-    const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY;
-    const JELLYFIN_USER_ID = process.env.JELLYFIN_USER_ID;
-    const proxyBase = `${process.env.HTTPS_BASE_URL}/proxy-image?url=`;
-    
     const jellyfinItemId = id.replace('jf:', '');
+
+    // Who is asking. Jellyfin decides — an unauthenticated caller gets no metadata.
+    const viewer = await resolveViewer(config);
+    if (!viewer) return { meta: {} };
 
     try {
         // ==========================================
         // FETCH THE MAIN ITEM (Movie or Series)
         // ==========================================
-        const itemRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items/${jellyfinItemId}`, {
-            headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
+        const itemRes = await jellyfinRequest(viewer, {
+            method: 'get',
+            path: `/Users/${viewer.userId}/Items/${jellyfinItemId}`,
             params: { Fields: 'ProviderIds' } // <-- Ensure we get the IDs!
         });
 
         const item = itemRes.data;
         //console.log(`***[DEBUG] item: ${JSON.stringify(item, null, 2)}`);
 
-        const rawPosterUrl = `${JELLYFIN_URL}/Items/${item.Id}/Images/Primary?api_key=${JELLYFIN_API_KEY}`;
-        const posterUrl = `${proxyBase}${encodeURIComponent(rawPosterUrl)}`;
-
-        const rawBackgroundUrl = `${JELLYFIN_URL}/Items/${item.Id}/Images/Backdrop?api_key=${JELLYFIN_API_KEY}`;
-        const backgroundUrl = `${proxyBase}${encodeURIComponent(rawBackgroundUrl)}`;
-
-        const rawLogoUrl = `${JELLYFIN_URL}/Items/${item.Id}/Images/Logo?api_key=${JELLYFIN_API_KEY}`;
-        const logoUrl = `${proxyBase}${encodeURIComponent(rawLogoUrl)}`;
+        const posterUrl = proxyImageUrl(viewer, item.Id, 'Primary');
+        const backgroundUrl = proxyImageUrl(viewer, item.Id, 'Backdrop');
+        const logoUrl = proxyImageUrl(viewer, item.Id, 'Logo');
 
         const meta = {
             id: id,
@@ -54,8 +50,9 @@ export const metaHandler = async ({ type, id }) => {
         // ==========================================
         if (type === 'series') {
             // Fetch local episodes from Jellyfin
-            const episodesRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items`, {
-                headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
+            const episodesRes = await jellyfinRequest(viewer, {
+                method: 'get',
+                path: `/Users/${viewer.userId}/Items`,
                 params: {
                     ParentId: item.Id, 
                     IncludeItemTypes: 'Episode',
@@ -71,8 +68,7 @@ export const metaHandler = async ({ type, id }) => {
                     const seasonNum = ep.ParentIndexNumber || 1;
                     const episodeNum = ep.IndexNumber || 1;
 
-                    const rawEpisodeThumbnail = `${JELLYFIN_URL}/Items/${ep.Id}/Images/Primary?api_key=${JELLYFIN_API_KEY}`;
-                    const episodeThumbnail = `${proxyBase}${encodeURIComponent(rawEpisodeThumbnail)}`;
+                    const episodeThumbnail = proxyImageUrl(viewer, ep.Id, 'Primary');
 
                     return {
                         id: `jf:${ep.Id}`, 

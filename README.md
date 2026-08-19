@@ -13,6 +13,7 @@ Each feature is enabled independently through configuration, and everything runs
 * 🎬 **Full Library Integration:** Browse your Jellyfin Movies and TV Shows directly within Stremio's Home and Discover tabs (or easily hide them and rely purely on search).
 * 📺 **Series Support:** Season and episode resolution. Automatically maps local episodes to Stremio's UI, pulling native thumbnails and falling back to the show's backdrop when needed.
 * 🚀 **Smart Playback Options:** Offers both **Direct Play** (raw, uncompressed file delivery for maximum quality on capable devices like the NVIDIA Shield) and **Transcode** (HLS fallback for universal compatibility).
+* 🎚️ **Configurable Transcode Quality:** Each viewer picks the sizes they want offered, and every one becomes its own row in Stremio's stream list — so quality is chosen at play time, not pinned at install. Bitrates are derived from the file itself, scaled 1:1 with pixel count (half the pixels, half the bits) unless you set an explicit ceiling, and tiers at or above the source resolution are never offered. Codec, audio codec and channel count are configurable too. See **Transcode quality** below.
 * 📝 **Native Subtitle Injection:** Automatically searches your Jellyfin library, extracts attached `.srt` or embedded subtitle tracks, and pipes them directly into Stremio's video player.
 * 🗂️ **Local Subtitles:** Bring your own subtitle files — hand-synced tracks, fan translations, alternate timings — and serve them for *any* title you play in Stremio, matched purely by its IMDb id. The video itself can come from anywhere — Stremio's built-in Cinemeta catalog, your Jellyfin library, or any other addon's stream — because subtitles attach by id, independent of where (or whether) the media exists in Jellyfin. Files are organized one folder per title with a simple naming convention, and a companion write endpoint (with an optional shared secret) lets tools drop finished translations straight into the store. Fully opt-in; see **Local Subtitles** below.
 * 🖼️ **Dynamic Image Proxying:** Features a custom, memory-efficient Express proxy that catches Jellyfin image URLs mid-air, stripping restrictive `Content-Disposition: attachment` security headers so posters and backgrounds render natively in Stremio.
@@ -50,7 +51,12 @@ Enable the feature(s) you want. See [`.env.example`](.env.example) for the fully
 # --- Local Subtitles (optional): folder of your own subtitle files ---
 # LOCAL_SUBS_DIR=/path/to/subtitles
 
-# --- Jellyfin Bridge (optional): set all three together, or none ---
+# --- Jellyfin Bridge (optional) — pick ONE of the two modes ---
+# Multi-user (recommended; required if the addon is reachable off your LAN):
+# JELLYFIN_URL=http://192.168.X.X:8096
+# BRIDGE_SECRET=some-long-random-string
+#
+# Single-user (the original behaviour, LAN-only):
 # JELLYFIN_URL=http://192.168.X.X:8096
 # JELLYFIN_API_KEY=your_api_key_here
 # JELLYFIN_USER_NAME=your_username
@@ -103,6 +109,158 @@ If you prefer to run the Node.js application directly on your host machine witho
    https://192-168-x-x.local-ip.medicmobile.org:7001/manifest.json
    ```
    Copy this URL, paste it into Stremio's Addon Search Bar, and click **Install**.
+
+## 🔐 Multi-user mode: every viewer signs in with their own Jellyfin account
+
+Set `BRIDGE_SECRET` (any long random string) alongside `JELLYFIN_URL` and the addon switches from
+one shared identity to one identity per viewer. Everyone opens `/configure`, signs in with their own
+Jellyfin username and password, and gets a personal install link. They see the libraries their
+account can see, and nothing else.
+
+This exists because of a specific problem with the single-user mode. Jellyfin only issues one kind
+of API key, and it is always server-wide **administrator** — there is no read-only or per-library
+variety. The addon put that key into every stream, artwork and subtitle URL it handed to a client,
+so a single copied playback URL was full admin over the server. That is survivable on a trusted LAN
+and indefensible anywhere else.
+
+In multi-user mode nothing like that leaves the server. Each viewer's login is authenticated with
+`POST /Users/AuthenticateByName`, which returns a token carrying exactly that user's permissions,
+and their login is sealed (AES-256-GCM) into their install URL so no password appears in it either.
+Jellyfin is the only gate: refuse the login there — wrong password, disabled account, no access to a
+library — and the addon has nothing to serve. There is no second password to keep in step.
+
+### Playback is proxied, and here is why
+
+Jellyfin's media endpoints are anonymous. This is not a guess about the implementation; the server's
+own OpenAPI document declares them so, and you can confirm it on your own instance:
+
+```bash
+curl -s http://YOUR-JELLYFIN:8096/api-docs/openapi.json   | python3 -c 'import sys,json;d=json.load(sys.stdin);print([p for p,o in d["paths"].items() if not o.get("get",{}).get("security")][:20])'
+```
+
+`/Videos/{id}/stream`, the HLS segment routes, subtitle streams and image routes all come back with
+no security requirement. On a live 10.11 server, `GET /Videos/{id}/stream` with no token at all
+returns `206 Partial Content` and the file; a bogus token behaves identically. The item GUID is
+effectively the credential.
+
+That has a consequence worth being blunt about: if the addon simply handed out Jellyfin URLs, then
+"the viewer is authenticated" would stop at the catalogue, and the bytes would remain reachable by
+anyone who ever saw a URL — long after you disabled their account.
+
+So when `PROXY_MEDIA` is on (the default in multi-user mode) the addon serves playback itself, at
+`/{config}/jf/Videos/...`. It resolves the viewer, authenticates them against Jellyfin, and only
+then streams the file, over the LAN, as that user. The URL handed to the player contains **no
+Jellyfin token at all** — just the same sealed configuration every other request carries. Range
+requests and seeking pass through untouched, and the proxy path deliberately mirrors Jellyfin's own
+so HLS playlists resolve their relative segment references straight back through it with no
+rewriting. Your Jellyfin no longer needs to be reachable from the internet for remote playback to
+work; the addon can be the only door.
+
+Bandwidth is unchanged. The media already leaves the machine it lives on — this only changes which
+process reads it off disk.
+
+### Revoking access takes about a minute
+
+Disable or delete the account in Jellyfin and that viewer stops, without touching the addon,
+rotating `BRIDGE_SECRET`, or reissuing anyone else's link.
+
+It is not instantaneous, and the reason is the same anonymity described above: a proxied stream
+never comes back `401`, so nothing forces a cached session to expire on its own. Every
+`AUTH_RECHECK_SECONDS` (default 60) the addon puts the viewer's token to an endpoint that *does*
+enforce authorisation. A disabled account fails there, the session is dropped, re-authentication
+from the stored credentials fails too, and the next request gets `401`. Lower the value for tighter
+revocation at the cost of one small request per viewer per interval; `0` checks every request. An
+already-open byte range is not interrupted, but players re-request constantly, so in practice
+playback dies within the window.
+
+### Sign-in rate limiting
+
+`/configure` is a login endpoint, and Jellyfin will not protect it for you: measured against a stock
+10.11 server, six consecutive wrong passwords all returned `401` and the seventh, correct one
+succeeded, with `LoginAttemptsBeforeLockout: -1` and the account still enabled. The addon therefore
+counts failures itself — per username (the counter that matters, since an attacker rotating IPs
+still cannot hammer one account) and per client IP. Defaults are 5 and 20 failures in a 15-minute
+window; a successful sign-in clears the counter, so a viewer who fumbles their password twice is not
+locked out. Behind a reverse proxy, set `TRUSTED_PROXY_IPS` to the proxy's address, or every viewer
+shares one bucket.
+
+### What stays the same
+
+Single-user mode is untouched. Leave `BRIDGE_SECRET` unset and the addon behaves exactly as before,
+including the SDK's own landing page and the direct-from-Jellyfin playback URLs. `PROXY_MEDIA`
+defaults to off there, so an existing private LAN install upgrades with no behavioural change at
+all.
+
+
+## 🎚️ Transcode quality
+
+The addon used to offer exactly one transcode, hardcoded to `VideoCodec=h264&AudioCodec=aac` with
+no size and no bitrate. Jellyfin's default in that case is the **source** bitrate — so a 24 Mbps
+remux was re-encoded to roughly 24 Mbps, and the entry that existed to make a stream affordable did
+not make it any smaller. Fine on a LAN, useless anywhere else.
+
+Instead, a viewer picks **tiers** on the configure page. Each tier becomes its own row in Stremio's
+stream list next to Direct Play, so quality is chosen when you press play rather than pinned at
+install time:
+
+```
+Jellyfin  Direct Play      1080p • H264 • 5.1 • 16.6 GB
+Jellyfin  720p             Transcode 720p — H.264 • ≤ 10.6 Mbps • stereo
+Jellyfin  480p             Transcode 480p — H.264 • ≤ 4.7 Mbps • stereo
+```
+
+### How the bitrate is worked out
+
+Leave a tier's bitrate blank and it is derived from the file itself, scaled 1:1 with **pixel
+count** — half the pixels, half the bits. Aspect ratio is preserved, so this is the height ratio
+squared:
+
+```
+bitrate = sourceVideoBitrate × (tierHeight / sourceHeight)²
+```
+
+A 1080p source at 23.8 Mbps offered at 720p gives `23.8 × (720/1080)² = 10.6 Mbps`. Holding
+bits-per-pixel constant means the picture survives the downscale, instead of a fixed ladder guessing
+at a file it knows nothing about. Type a number into the tier's box to override it.
+
+The source **video stream's** bitrate is used, not the container's — the container figure includes
+every audio track, which on a dubbed file carrying a second language is a few hundred kbps that are
+not picture.
+
+### Which tiers actually appear
+
+Only tiers **strictly smaller** than the source. Upscaling spends CPU or GPU time to make the picture
+no better and the stream bigger, and a tier at exactly the source resolution asks the viewer to
+choose between "1080p" and "1080p". So a 1080p file offers 720p and below; a 720p file offers 480p
+and below.
+
+The one exception is a file whose codec the player cannot decode. Direct Play fails there, and with
+every tier filtered out the viewer would have no working option — so a single same-resolution entry
+is offered, which stream-copy turns into a cheap remux into a playable container rather than a real
+transcode.
+
+### The rest of the options
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| Video codec | H.264 | Universally playable. HEVC roughly halves the bitrate at equal quality but needs fMP4 segments and client support, so it is marked not-web-ready. AV1 is deliberately absent — encoder support is too hardware-dependent to promise. |
+| Audio codec | AAC | AC3 / E-AC3 / Opus available for passthrough to a capable receiver. |
+| Audio channels | Stereo | 5.1 raises the audio bitrate from 128k to 384k. Stereo is the safe default away from home, where AAC 5.1 trips a fair number of clients. |
+| Skip re-encoding when the file already fits | on | `EnableAutoStreamCopy`. Jellyfin copies the video stream untouched when it already satisfies the tier, and only re-encodes when it does not. |
+
+Preferences travel inside the same sealed blob as the login, so there is one opaque install URL and
+nothing in it invites hand-editing. Nothing is trusted on the way back in: unknown tiers and codecs
+are dropped rather than forwarded to Jellyfin, and bitrates outside 100 kbps–100 Mbps are rejected
+rather than clamped — silently clamping a mistyped `1` up to 100 kbps hands back an unwatchable
+stream the viewer cannot explain.
+
+**Existing install links keep working.** A blob sealed before this feature existed simply carries no
+preferences and falls back to the defaults, so nothing has to be re-minted or re-installed.
+
+Each tier gets its **own** `bingeGroup`. Stremio carries that group forward to auto-select the next
+episode, so a single shared group across several tiers would let the next episode come back at a
+different quality than the one just chosen.
+
 
 ## 🗂️ Local Subtitles
 

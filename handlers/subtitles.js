@@ -1,6 +1,7 @@
-import axios from 'axios';
 import { getStandaloneSubtitles } from '../subtitleSources/index.js';
 import { isJellyfinConfigured, getDefaultSubsLang } from '../global-constants.js';
+import { resolveViewer, playbackUrl } from '../viewer.js';
+import { jellyfinRequest } from '../jellyfin-auth.js';
 
 // Helper to parse languages robustly
 function parseLanguage(stream) {
@@ -20,12 +21,9 @@ function parseLanguage(stream) {
     return getDefaultSubsLang();
 }
 
-export const subtitlesHandler = async ({ type, id }) => {
+export const subtitlesHandler = async ({ type, id, config }) => {
     console.log(`[Subtitles] Request for ${type} | id: ${id}`);
 
-    const JELLYFIN_URL = process.env.JELLYFIN_URL;
-    const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY;
-    const JELLYFIN_USER_ID = process.env.JELLYFIN_USER_ID;
     const httpsBase = process.env.HTTPS_BASE_URL;
 
     // We accumulate from every source into one list, then return it once.
@@ -52,7 +50,11 @@ export const subtitlesHandler = async ({ type, id }) => {
     // 2) JELLYFIN SUBTITLES (embedded / sidecar tracks on the media item)
     //    Skipped entirely in subtitles-only mode.
     // ==========================================
-    if (isJellyfinConfigured()) try {
+    // Who is asking. A caller Jellyfin won't authenticate still gets whatever the
+    // standalone sources found above — those are ours, not Jellyfin's.
+    const viewer = isJellyfinConfigured() ? await resolveViewer(config) : null;
+
+    if (viewer) try {
         let jellyfinItemId = null;
 
         // ----- RESOLVE THE ID -----
@@ -66,8 +68,9 @@ export const subtitlesHandler = async ({ type, id }) => {
             const episode = parts[2];
 
             // Safely search Jellyfin's external IDs
-            const searchRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items`, {
-                headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
+            const searchRes = await jellyfinRequest(viewer, {
+                method: 'get',
+                path: `/Users/${viewer.userId}/Items`,
                 params: {
                     Recursive: true,
                     AnyProviderIdEquals: imdbId,
@@ -96,10 +99,11 @@ export const subtitlesHandler = async ({ type, id }) => {
                     // and relied on the client-side match below), and matched
                     // nothing at all where episodes aren't Episode-type children
                     // of the series -- e.g. loose files in a mixed library.
-                    const epRes = await axios.get(`${JELLYFIN_URL}/Shows/${matchedItem.Id}/Episodes`, {
-                        headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
+                    const epRes = await jellyfinRequest(viewer, {
+                        method: 'get',
+                        path: `/Shows/${matchedItem.Id}/Episodes`,
                         params: {
-                            userId: JELLYFIN_USER_ID,
+                            userId: viewer.userId,
                             season: targetSeason,
                             Fields: 'ParentIndexNumber,IndexNumber'
                         }
@@ -125,8 +129,9 @@ export const subtitlesHandler = async ({ type, id }) => {
         // Any standalone subtitles collected above must still be returned for
         // titles that aren't in Jellyfin at all.
         if (jellyfinItemId) {
-            const itemRes = await axios.get(`${JELLYFIN_URL}/Users/${JELLYFIN_USER_ID}/Items/${jellyfinItemId}`, {
-                headers: { 'X-Emby-Token': JELLYFIN_API_KEY },
+            const itemRes = await jellyfinRequest(viewer, {
+                method: 'get',
+                path: `/Users/${viewer.userId}/Items/${jellyfinItemId}`,
                 params: { Fields: 'MediaSources' }
             });
 
@@ -138,7 +143,12 @@ export const subtitlesHandler = async ({ type, id }) => {
 
                 mediaSource.MediaStreams.forEach(stream => {
                     if (stream.Type === 'Subtitle' && validCodecs.includes(stream.Codec?.toLowerCase())) {
-                        const subUrl = `${JELLYFIN_URL}/Videos/${jellyfinItemId}/${mediaSource.Id}/Subtitles/${stream.Index}/0/Stream.${stream.Codec === 'vtt' ? 'vtt' : 'srt'}?api_key=${JELLYFIN_API_KEY}`;
+                        // Fetched by the player: public host, viewer's own token.
+                        const ext = stream.Codec === 'vtt' ? 'vtt' : 'srt';
+                        const subUrl = playbackUrl(
+                            viewer,
+                            `/Videos/${jellyfinItemId}/${mediaSource.Id}/Subtitles/${stream.Index}/0/Stream.${ext}`
+                        );
 
                         const langCode = parseLanguage(stream);
 
